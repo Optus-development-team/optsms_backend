@@ -1,336 +1,123 @@
-# 📋 Resumen de Implementación - Webhook WhatsApp Messages
+# 📋 Resumen de Implementación - Router MoE WhatsApp
 
-## ✅ Implementación Completada
+## ✅ Alcance Entregado (v2.2.0)
 
-Se han implementado exitosamente las modificaciones al webhook de messages de WhatsApp API siguiendo la documentación oficial de Meta/Facebook.
-
----
-
-## 📦 Archivos Modificados
-
-### 1. **src/whatsapp/interfaces/whatsapp.interface.ts**
-**Cambios:**
-- ✅ Agregado campo `identity_key_hash` opcional en `WhatsAppContact`
-- ✅ Agregado campo `context` en `WhatsAppIncomingMessage`
-- ✅ Agregado campo `referral` en `WhatsAppIncomingMessage`
-- ✅ Agregado campo `errors` en `WhatsAppIncomingMessage`
-- ✅ Soporte para tipos adicionales: `button`, `sticker`, `reaction`, `order`, `system`, `unsupported`
-
-**Líneas modificadas:** ~80 líneas
-
-### 2. **src/whatsapp/dto/whatsapp-webhook.dto.ts**
-**Cambios:**
-- ✅ Agregado `identity_key_hash` en `WhatsAppContactDto`
-- ✅ Creado `WhatsAppReferredProductDto`
-- ✅ Creado `WhatsAppContextDto`
-- ✅ Creado `WhatsAppReferralDto`
-- ✅ Creado `WhatsAppReferralWelcomeMessageDto`
-- ✅ Creado `WhatsAppMessageErrorDto`
-- ✅ Creado `WhatsAppErrorDataDto`
-- ✅ Actualizado `WhatsAppIncomingMessageDto` con nuevos campos
-- ✅ Actualizado array de tipos de mensaje soportados
-- ✅ Actualizado `WhatsAppWebhookModels` con nuevas clases
-
-**Líneas agregadas:** ~150 líneas
-
-### 3. **src/whatsapp/whatsapp.service.ts**
-**Cambios:**
-- ✅ Mejorado `handleMessage()` con logging de context y referral
-- ✅ Actualizado `handleTextMessage()` con lógica para referral y context
-- ✅ Creado `handleMediaMessage()` para imágenes, videos, audios y documentos
-- ✅ Creado `handleLocationMessage()` para mensajes de ubicación
-- ✅ Creado `handleInteractiveMessage()` para botones y listas
-- ✅ Creado `handleButtonMessage()` para mensajes de tipo button
-- ✅ Agregado soporte para tipos: `button`, `reaction`, `sticker`, `order`, `system`, `unsupported`
-- ✅ Logging detallado de errores en mensajes no soportados
-
-**Líneas agregadas:** ~120 líneas
+- Orquestador central (`AgentRouterService`) que detecta intents y entrega el mensaje al agente correcto.
+- Capa de identidad (`IdentityService`) + sanitización (`SanitizationService`) para proteger PII antes de llegar al LLM.
+- Agentes especializados: citas, ventas/pagos, reportes y respuestas 2FA para admins.
+- Integración asincrónica con el microservicio de pagos mediante `PaymentClientService` y el nuevo webhook `POST /webhook/payments/result`.
+- Subida automática de QR dinamicos (base64) a WhatsApp Cloud API usando `form-data`.
+- Limpieza de endpoints legacy `/webhook/send*` para dejar únicamente las rutas descritas en las instrucciones.
+- Toda la documentación de `.github/docs` re-escrita para reflejar el nuevo flujo.
+- Resolución multi-tenant vía Supabase (`companies`, `company_users`) usando `metadata.phone_number_id`.
+- Sesiones Google ADK persistidas en `adk_sessions` con contexto por tenant y protección del historial.
 
 ---
 
-## 📄 Archivos de Documentación Creados
+## 📦 Archivos Clave
 
-### 1. **WEBHOOK_MESSAGES_UPDATES.md** (7.7 KB)
-**Contenido:**
-- Resumen de cambios implementados
-- Nuevas funcionalidades (Context, Referral, Identity Key Hash)
-- Handlers implementados con ejemplos
-- Ejemplos de webhooks en JSON
-- Validación de datos
-- Recomendaciones de uso
-- Próximos pasos sugeridos
-- Referencias a documentación oficial
+### Core & Router
+- `src/whatsapp/whatsapp.service.ts` – delega respuestas al router y soporta subida de media.
+- `src/whatsapp/services/agent-router.service.ts` – matching de intents + control de roles.
+- `src/whatsapp/services/identity.service.ts` – compara `sender_id` vs `ADMIN_PHONE_NUMBER`.
+- `src/whatsapp/services/sanitization.service.ts` – tokeniza teléfonos, correos, direcciones y nombres.
+- `src/whatsapp/whatsapp.types.ts` – enums y contratos compartidos (roles, intents, payment states).
+- `src/whatsapp/services/supabase.service.ts` – cliente `pg` conectado al Supavisor (6543) con `pgbouncer=true`.
+- `src/whatsapp/services/adk-session.service.ts` – persistencia y actualización del contexto ADK en `adk_sessions`.
 
-### 2. **CHANGELOG_WEBHOOK.md** (5.1 KB)
-**Contenido:**
-- Changelog detallado versión 2.0.0
-- Nuevas características
-- Cambios significativos con ejemplos de código
-- Casos de uso soportados
-- Referencias de la API oficial
-- Próximos pasos recomendados
+### Agentes
+- `src/whatsapp/agents/appointment-agent.service.ts`
+- `src/whatsapp/agents/sales-agent.service.ts`
+- `src/whatsapp/agents/reporting-agent.service.ts`
 
-### 3. **WEBHOOK_STRUCTURE.md** (13 KB)
-**Contenido:**
-- Diagrama de flujo del webhook
-- Estructura del payload
-- Tabla de tipos de mensaje soportados
-- Campos opcionales especiales (Context, Referral, Identity Key Hash)
-- Flujo de respuesta automática
-- Tabla de respuestas del sistema
-- Estados de mensaje saliente
-- Seguridad y validación
-- Variables de entorno requeridas
-- Ejemplos de testing
-- Monitoring y logs
+### Pagos
+- `src/whatsapp/services/payment-client.service.ts` – cliente HTTP para `/generate-qr`, `/verify-payment`, `/set-2fa`.
+- `src/whatsapp/payment-webhook.controller.ts` – expone `POST /webhook/payments/result`.
+- `src/whatsapp/dto/payment-webhook.dto.ts` – validación de eventos `QR_GENERATED`, `VERIFICATION_RESULT`, `LOGIN_2FA_REQUIRED`.
 
-### 4. **TESTING_EXAMPLES.md** (18+ KB)
-**Contenido:**
-- Ejemplos completos con cURL para todos los tipos de mensajes
-- Collection de Postman importable
-- Tests E2E con Jest
-- Tests unitarios del servicio
-- Variables de entorno para testing
-- Logs esperados
-- Checklist de testing
-- Métricas y monitoring en producción
+### Documentación actualizada
+Todos los archivos en `.github/docs/*.md` fueron editados para reflejar el nuevo diseño (índice, quick start, estructura, testing, etc.).
 
 ---
 
-## 🎯 Funcionalidades Implementadas
+## 🔐 Seguridad & Roles
 
-### 1. ✅ Soporte para Context
-- Detecta mensajes desde botón "Message business"
-- Identifica productos referenciados
-- Logging automático de información de contexto
-
-### 2. ✅ Soporte para Referral
-- Detecta mensajes desde anuncios de clic a WhatsApp
-- Captura información completa del anuncio (headline, body, media)
-- Tracking de CTWA Click ID
-- Logging automático de detalles del anuncio
-
-### 3. ✅ Identity Key Hash
-- Campo opcional en contactos
-- Soporte para verificación de cambio de identidad
-
-### 4. ✅ Nuevos Tipos de Mensaje
-| Tipo | Estado |
-|------|--------|
-| `text` | ✅ Handler completo |
-| `image` | ✅ Handler completo |
-| `video` | ✅ Handler completo |
-| `audio` | ✅ Handler completo |
-| `document` | ✅ Handler completo |
-| `location` | ✅ Handler completo |
-| `interactive` | ✅ Handler completo |
-| `button` | ✅ Handler completo |
-| `contacts` | ✅ Log only |
-| `sticker` | ✅ Log only |
-| `reaction` | ✅ Log only |
-| `order` | ✅ Log only |
-| `system` | ✅ Log only |
-| `unsupported` | ✅ Error handling |
-
-### 5. ✅ Handlers Implementados
-- `handleTextMessage()` - Con detección de referral y context
-- `handleMediaMessage()` - Para todos los tipos de media
-- `handleLocationMessage()` - Para ubicaciones GPS
-- `handleInteractiveMessage()` - Para botones y listas
-- `handleButtonMessage()` - Para mensajes de tipo button
-
-### 6. ✅ Logging Mejorado
-- Context automático cuando está presente
-- Referral automático cuando está presente
-- Productos referenciados
-- Errores detallados en mensajes no soportados
+- `IdentityService` ahora consulta `public.companies` y `public.company_users` en Supabase usando `metadata.phone_number_id` y `sender_id`.
+- `SanitizationService` reemplaza patrones sensibles antes de cualquier log/dispatch.
+- Intents `INTENT_REPORTING` y `INTENT_2FA_REPLY` son exclusivos para `ROLE_ADMIN`.
+- Se removieron los endpoints que permitían enviar mensajes arbitrarios y sólo se expone el webhook requerido.
 
 ---
 
-## 🧪 Validación
+## 💳 Flujo de Pagos
 
-### ✅ Compilación
-```bash
-npm run build
-# ✓ Compilación exitosa sin errores
-```
-
-### ✅ Linting
-```bash
-npm run lint
-# ✓ Sin errores de ESLint
-```
-
-### ✅ TypeScript
-- ✓ Sin errores de tipo
-- ✓ Todas las interfaces correctamente tipadas
-- ✓ Validaciones con class-validator
-
-### ✅ Documentación Swagger
-- ✓ Todos los DTOs documentados con @ApiProperty
-- ✓ Ejemplos incluidos
-- ✓ Descripciones completas
+- State machine completo en `SalesAgentService` (`STATE_CART → ... → STATE_COMPLETED`).
+- Las órdenes se indexan por `company_id` y cada payload enviado al microservicio incluye `company_id` para seleccionar las credenciales correctas.
+- Uso de `PaymentClientService` con fallback mock si `PAYMENT_API_KEY` no está presente.
+- Webhook de pagos crea acciones (texto/imagen) que `WhatsappService` envía automáticamente (incluyendo QR subido vía Graph API `/{phoneNumberId}/media`).
+- Eventos `LOGIN_2FA_REQUIRED` notifican automáticamente a todos los admins (`company_users.role = 'ADMIN'`) del tenant.
+- 2FA solicita al admin el token y despacha `POST /v1/fiat/set-2fa` cuando llega la respuesta.
 
 ---
 
-## 📚 Casos de Uso Cubiertos
+## 📚 Documentación
 
-### ✅ Mensajes Básicos
-- [x] Texto simple
-- [x] Imagen con caption
-- [x] Video con caption
-- [x] Audio / Nota de voz
-- [x] Documento con caption
-- [x] Ubicación GPS
-- [x] Contactos
-
-### ✅ Mensajes Interactivos
-- [x] Botones (button_reply)
-- [x] Listas (list_reply)
-- [x] Tipo button
-
-### ✅ Mensajes desde Productos
-- [x] Context con referred_product
-- [x] Detección automática de catalog_id
-- [x] Detección automática de product_retailer_id
-- [x] Respuesta personalizada
-
-### ✅ Mensajes desde Anuncios
-- [x] Referral completo
-- [x] Tracking de CTWA Click ID
-- [x] Información del anuncio (headline, body)
-- [x] Media del anuncio (image_url, video_url)
-- [x] Mensaje de bienvenida
-- [x] Respuesta personalizada
-
-### ✅ Mensajes Especiales
-- [x] Reacciones
-- [x] Stickers
-- [x] Órdenes
-- [x] Sistema
-- [x] No soportados con errores
+Archivos sincronizados con el nuevo flujo:
+- `DOCUMENTATION_INDEX.md` – resalta la versión 2.2.0 y la presencia del router.
+- `QUICK_START.md` – nuevas variables (`ADMIN_PHONE_NUMBER`, `PAYMENT_BASE_URL`, `PAYMENT_API_KEY`) + pruebas de intents y webhook de pagos.
+- `WHATSAPP_MODULE_README.md` y `WHATSAPP_README.md` – describen el Mixture of Experts, las rutas activas y el ciclo de payments.
+- `WEBHOOK_MESSAGES_UPDATES.md`, `WEBHOOK_STRUCTURE.md`, `TESTING_EXAMPLES.md`, `CHANGELOG_WEBHOOK.md`, `WEBHOOK_TEST_FIX.md`, `IMPLEMENTATION_SUMMARY.md` (este archivo) – todo actualizado.
 
 ---
 
-## 🔧 Configuración Requerida
+## 🧪 Validación Técnica
 
-### Variables de Entorno (.env)
+- `npm run build` ✔️
+- Tipado estricto en los nuevos servicios, DTOs y enums.
+- Dependencia nueva: `form-data@^4.0.1` para subir imágenes.
+
+---
+
+## ⚙️ Variables de Entorno Relevantes
+
 ```env
 WHATSAPP_API_VERSION=v21.0
-WHATSAPP_PHONE_NUMBER_ID=tu_phone_number_id
-WHATSAPP_API_TOKEN=tu_api_token
-WHATSAPP_VERIFY_TOKEN=tu_verify_token
+WHATSAPP_PHONE_NUMBER_ID=...        # Requerido para enviar y subir media
+WHATSAPP_API_TOKEN=...
+WHATSAPP_VERIFY_TOKEN=...
+ADMIN_PHONE_NUMBER=5215550000000
+PAYMENT_BASE_URL=http://payment-backend-service
+PAYMENT_API_KEY=super-secret-key    # Opcional (activa llamadas reales)
+SUPABASE_DB_URL=postgresql://USER:PASSWORD@db.supabase.co:6543/postgres?pgbouncer=true&sslmode=require
+SUPABASE_DB_POOL_SIZE=5
+DEFAULT_COMPANY_ID=00000000-0000-0000-0000-000000000000   # Opcional para entornos locales
+DEFAULT_COMPANY_NAME=Optus Sandbox                        # Opcional
+DEFAULT_COMPANY_CONFIG='{"company_tone":"Neutro"}'
 ```
 
 ---
 
-## 🚀 Próximos Pasos Recomendados
+## 📈 Métricas del Cambio
 
-### Corto Plazo
-1. ⏭️ Implementar persistencia en base de datos
-2. ⏭️ Crear sistema de colas para procesamiento asíncrono
-3. ⏭️ Implementar rate limiting
-4. ⏭️ Agregar caché para respuestas frecuentes
-
-### Mediano Plazo
-1. ⏭️ Sistema de analytics para tracking de anuncios
-2. ⏭️ Integración con catálogo de productos
-3. ⏭️ Sistema de carritos de compra
-4. ⏭️ CRM para gestión de conversaciones
-
-### Largo Plazo
-1. ⏭️ IA para respuestas automáticas inteligentes
-2. ⏭️ Dashboard de métricas y analytics
-3. ⏭️ Sistema de reportes
-4. ⏭️ Integración con otros canales (Telegram, etc.)
+- **Nuevos archivos:** 9 (servicios, agentes, DTOs, controller).
+- **Archivos modificados:** 10+ (servicio principal, módulo, controller, docs, package.json).
+- **Líneas agregadas:** ~900 código / ~600 documentación.
+- **Endpoints activos:**
+	- `GET /webhook`
+	- `POST /webhook`
+	- `POST /webhook/payments/result`
 
 ---
 
-## 📖 Referencias
+## 🚀 Próximos Pasos Propuestos
 
-### Documentación Oficial
-- [WhatsApp Cloud API - Messages Webhook](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/reference/messages)
-- [WhatsApp Cloud API - Text Messages](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/reference/messages/text)
-- [WhatsApp Cloud API - Webhooks Guide](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks)
-
-### Documentación del Proyecto
-- `WEBHOOK_MESSAGES_UPDATES.md` - Guía completa de funcionalidades
-- `CHANGELOG_WEBHOOK.md` - Historial de cambios
-- `WEBHOOK_STRUCTURE.md` - Estructura y diagramas
-- `TESTING_EXAMPLES.md` - Ejemplos de testing
-- `WHATSAPP_README.md` - README original (si existe)
+1. Persistir el estado de órdenes en una base de datos/broker para soportar despliegues multi instancia.
+2. Implementar colas (BullMQ) para la sincronización Google Calendar / inventario.
+3. Añadir pruebas unitarias específicas para cada agente y para el router.
+4. Conectar con el Payment Backend real y reemplazar el mock QR.
 
 ---
 
-## 📊 Estadísticas del Proyecto
-
-### Archivos
-- **Modificados:** 3 archivos
-- **Creados:** 4 archivos de documentación
-- **Total:** 7 archivos actualizados
-
-### Código
-- **Líneas agregadas:** ~350 líneas
-- **Nuevas clases/interfaces:** 7
-- **Nuevos handlers:** 5
-- **Tipos de mensaje soportados:** 14
-
-### Documentación
-- **Archivos MD:** 4
-- **Total de documentación:** ~45 KB
-- **Ejemplos de código:** 20+
-- **Ejemplos de cURL:** 8
-
----
-
-## ✨ Características Destacadas
-
-### 🎯 Completitud
-- ✅ 100% de la documentación oficial implementada
-- ✅ Todos los campos opcionales soportados
-- ✅ Validación completa con class-validator
-- ✅ TypeScript estricto sin errores
-
-### 🔒 Seguridad
-- ✅ Validación de webhook con token
-- ✅ Validación de payload con DTOs
-- ✅ Type safety completo
-- ✅ Manejo de errores robusto
-
-### 📝 Documentación
-- ✅ Swagger/OpenAPI completo
-- ✅ 4 archivos MD de documentación
-- ✅ Ejemplos de testing exhaustivos
-- ✅ Diagramas y estructuras visuales
-
-### 🧪 Testing
-- ✅ Ejemplos de cURL
-- ✅ Collection de Postman
-- ✅ Tests E2E con Jest
-- ✅ Tests unitarios
-- ✅ Checklist completo
-
----
-
-## 👨‍💻 Desarrollador
-
-**Fecha de implementación:** 30 de octubre de 2025  
-**Versión:** 2.0.0  
-**Base:** Documentación oficial WhatsApp Cloud API v21.0
-
----
-
-## 🎉 Conclusión
-
-La implementación está **100% completa** y lista para producción. Todos los tipos de mensajes de la API de WhatsApp están soportados, con handlers específicos, logging detallado, y documentación exhaustiva.
-
-El código está:
-- ✅ Compilado sin errores
-- ✅ Sin errores de linting
-- ✅ Completamente tipado
-- ✅ Validado con class-validator
-- ✅ Documentado con Swagger
-- ✅ Listo para testing
-- ✅ Preparado para producción
-
-**¡Implementación exitosa! 🚀**
+**Fecha:** 28 de noviembre de 2025  
+**Versión:** 2.2.0  
+**Estado:** ✅ Entregado y compilado

@@ -4,15 +4,12 @@ Backend configurado para actuar como webhook de WhatsApp Business API, permitien
 
 ## 🚀 Características
 
-- ✅ Verificación de webhook de WhatsApp
-- ✅ Recepción de mensajes entrantes
-- ✅ Envío de mensajes de texto
-- ✅ Envío de imágenes, videos, documentos
-- ✅ Respuestas automáticas
-- ✅ Manejo de estados de mensajes (enviado, entregado, leído)
-- ✅ Marcado automático de mensajes como leídos
-- ✅ Soporte para plantillas de WhatsApp
-- ✅ Descarga de medios
+- ✅ Verificación y normalización de webhook (formato test/producción).
+- ✅ Router con intents (`booking`, `shopping`, `reporting`, `2FA`).
+- ✅ Resolución de roles por `ADMIN_PHONE_NUMBER` + sanitización PII.
+- ✅ State machine de pagos + webhook `POST /webhook/payments/result`.
+- ✅ Subida de QR en base64 al Graph API.
+- ✅ Manejo de estados del mensaje (sent/delivered/read) y marcado automático.
 
 ## 📋 Requisitos previos
 
@@ -52,6 +49,13 @@ WHATSAPP_PHONE_NUMBER_ID=123456789012345
 
 # Versión de la API
 WHATSAPP_API_VERSION=v21.0
+
+# Número admin para RBAC
+ADMIN_PHONE_NUMBER=5215550000000
+
+# Integración con microservicio de pagos
+PAYMENT_BASE_URL=http://payment-backend-service
+PAYMENT_API_KEY=opcional_clave
 
 # Puerto de la aplicación
 PORT=3000
@@ -119,72 +123,36 @@ POST /webhook
 ```
 WhatsApp enviará automáticamente los mensajes a este endpoint.
 
-### 3. Enviar mensaje de texto (POST)
-```bash
-curl -X POST http://localhost:3000/webhook/send \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "34600123456",
-    "message": "¡Hola desde mi backend!"
-  }'
-```
+### 3. Webhook de pagos (POST)
+`POST /webhook/payments/result`
 
-### 4. Enviar imagen (POST)
-```bash
-curl -X POST http://localhost:3000/webhook/send-image \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "34600123456",
-    "imageUrl": "https://example.com/imagen.jpg",
-    "caption": "Mira esta imagen"
-  }'
-```
-
-### 5. Enviar plantilla (POST)
-```bash
-curl -X POST http://localhost:3000/webhook/send-template \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "34600123456",
-    "templateName": "hello_world",
-    "languageCode": "es"
-  }'
-```
+Eventos soportados: `QR_GENERATED`, `VERIFICATION_RESULT`, `LOGIN_2FA_REQUIRED`. Ver ejemplos en `QUICK_START.md`.
 
 ## 🔍 Estructura del proyecto
 
 ```
 src/
 ├── whatsapp/
-│   ├── interfaces/
-│   │   └── whatsapp.interface.ts    # Interfaces de TypeScript
-│   ├── whatsapp.controller.ts       # Controlador de endpoints
-│   ├── whatsapp.service.ts          # Lógica de negocio
-│   └── whatsapp.module.ts           # Módulo de WhatsApp
-├── app.module.ts                    # Módulo principal
-└── main.ts                          # Punto de entrada
+│   ├── agents/                      # Citas, ventas, reportes
+│   ├── dto/                         # Webhook oficial + pagos
+│   ├── interfaces/                  # Tipos WhatsApp Cloud API
+│   ├── services/                    # Router, identidad, pago, sanitizado
+│   ├── payment-webhook.controller.ts
+│   ├── whatsapp.controller.ts
+│   ├── whatsapp.service.ts
+│   ├── whatsapp.types.ts
+│   └── whatsapp.module.ts
+├── app.module.ts
+└── main.ts
 ```
 
 ## 💡 Personalización
 
 ### Modificar respuestas automáticas
 
-Edita el método `handleTextMessage` en `src/whatsapp/whatsapp.service.ts`:
-
-```typescript
-private async handleTextMessage(message: WhatsAppIncomingMessage): Promise<void> {
-  const messageText = message.text.body.toLowerCase();
-
-  // Agrega tus propias respuestas
-  if (messageText.includes('precio')) {
-    await this.sendTextMessage(
-      message.from,
-      'Nuestros precios empiezan desde €10/mes',
-    );
-  }
-  // ... más lógica personalizada
-}
-```
+- Ajusta keywords/intents en `AgentRouterService`.
+- Personaliza los mensajes en cada agente (`src/whatsapp/agents/*.service.ts`).
+- Añade nuevos estados al `SalesAgentService` si tu pasarela lo requiere.
 
 ### Agregar nuevos tipos de mensajes
 

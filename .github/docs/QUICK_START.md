@@ -6,11 +6,23 @@
 Crea o actualiza tu archivo `.env`:
 
 ```bash
+PORT=3000
 WHATSAPP_API_VERSION=v21.0
 WHATSAPP_PHONE_NUMBER_ID=tu_phone_number_id_aqui
 WHATSAPP_API_TOKEN=tu_token_aqui
 WHATSAPP_VERIFY_TOKEN=tu_verify_token_aqui
+ADMIN_PHONE_NUMBER=5215550000000
+PAYMENT_BASE_URL=http://payment-backend-service
+PAYMENT_API_KEY=opcional_api_key
+SUPABASE_DB_URL=postgresql://USER:PASSWORD@db.supabase.co:6543/postgres?pgbouncer=true&sslmode=require
+SUPABASE_DB_POOL_SIZE=5
+# Opcionales para desarrollo sin DB
+DEFAULT_COMPANY_ID=00000000-0000-0000-0000-000000000000
+DEFAULT_COMPANY_NAME=Optus Sandbox
+DEFAULT_COMPANY_CONFIG='{"company_tone":"Neutro","inventory_context":"General"}'
 ```
+
+> ℹ️ **Nota:** Usa siempre el puerto 6543 del Supavisor de Supabase + `pgbouncer=true` para no agotar conexiones cuando llegan múltiples webhooks.
 
 ### 2. Instalar Dependencias (si no lo has hecho)
 ```bash
@@ -46,7 +58,7 @@ curl -X GET "http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=t
 ```
 ✅ **Resultado esperado:** `test123`
 
-### Paso 3: Enviar un mensaje de texto simple
+### Paso 3: Intento Booking (Router → Appointment Agent)
 ```bash
 curl -X POST http://localhost:3000/webhook \
   -H "Content-Type: application/json" \
@@ -67,10 +79,10 @@ curl -X POST http://localhost:3000/webhook \
         }],
         "messages": [{
           "from": "5215551234567",
-          "id": "wamid.test123",
+          "id": "wamid.booking123",
           "timestamp": "1749416383",
           "type": "text",
-          "text": {"body": "Hola"}
+          "text": {"body": "Necesito agendar una cita mañana 10:30"}
         }]
       },
       "field": "messages"
@@ -78,9 +90,9 @@ curl -X POST http://localhost:3000/webhook \
   }]
 }'
 ```
-✅ **Resultado esperado:** `{"status":"success"}`
+✅ **Resultado esperado:** `{"status":"success"}` y en los logs verás `Intent INTENT_BOOKING` resuelto por el agente de citas.
 
-### Paso 4: Probar mensaje con Context (desde producto)
+### Paso 4: Intento Shopping + solicitud de QR
 ```bash
 curl -X POST http://localhost:3000/webhook \
   -H "Content-Type: application/json" \
@@ -101,18 +113,10 @@ curl -X POST http://localhost:3000/webhook \
         }],
         "messages": [{
           "from": "5215551234567",
-          "id": "wamid.test456",
+          "id": "wamid.sales123",
           "timestamp": "1749416383",
           "type": "text",
-          "text": {"body": "¿Está disponible?"},
-          "context": {
-            "from": "15550783881",
-            "id": "wamid.context123",
-            "referred_product": {
-              "catalog_id": "123456",
-              "product_retailer_id": "PROD_001"
-            }
-          }
+          "text": {"body": "Quiero pagar 1250 mxn"}
         }]
       },
       "field": "messages"
@@ -120,54 +124,19 @@ curl -X POST http://localhost:3000/webhook \
   }]
 }'
 ```
-✅ **Resultado esperado:** `{"status":"success"}`
+✅ **Resultado esperado:** `{"status":"success"}` y el log `Generando tu código QR con el banco...`.
 
-**Verifica los logs:** Deberías ver información del producto referenciado
-
-### Paso 5: Probar mensaje con Referral (desde anuncio)
+### Paso 5: Simular evento del microservicio de pagos
 ```bash
-curl -X POST http://localhost:3000/webhook \
+curl -X POST http://localhost:3000/webhook/payments/result \
   -H "Content-Type: application/json" \
   -d '{
-  "object": "whatsapp_business_account",
-  "entry": [{
-    "id": "102290129340398",
-    "changes": [{
-      "value": {
-        "messaging_product": "whatsapp",
-        "metadata": {
-          "display_phone_number": "15550783881",
-          "phone_number_id": "106540352242922"
-        },
-        "contacts": [{
-          "profile": {"name": "Test User"},
-          "wa_id": "5215551234567"
-        }],
-        "messages": [{
-          "from": "5215551234567",
-          "id": "wamid.test789",
-          "timestamp": "1749416383",
-          "type": "text",
-          "text": {"body": "Quiero más información"},
-          "referral": {
-            "source_url": "https://fb.me/test123",
-            "source_id": "120226305854810726",
-            "source_type": "ad",
-            "headline": "Ofertas Especiales",
-            "body": "¡50% de descuento!",
-            "media_type": "image",
-            "ctwa_clid": "test_click_id_12345"
-          }
-        }]
-      },
-      "field": "messages"
-    }]
-  }]
+  "event_type": "QR_GENERATED",
+  "order_id": "<pega_el_id_del_log>",
+  "qr_image_base64": "TU_QR_BASE64"
 }'
 ```
-✅ **Resultado esperado:** `{"status":"success"}`
-
-**Verifica los logs:** Deberías ver información del anuncio
+✅ **Resultado esperado:** `{"status":"received"}` y el servicio enviará automáticamente la imagen/QR al número que originó la orden.
 
 ---
 
@@ -177,42 +146,34 @@ Marca cada item a medida que lo pruebes:
 
 - [ ] ✅ Servidor iniciado correctamente
 - [ ] ✅ Endpoint de verificación funcionando (GET /webhook)
-- [ ] ✅ Mensaje de texto simple procesado
-- [ ] ✅ Mensaje con context procesado
-- [ ] ✅ Mensaje con referral procesado
-- [ ] ✅ Logs mostrando información correcta
+- [ ] ✅ Intent booking enruta al agente de citas
+- [ ] ✅ Intent shopping genera solicitud de QR
+- [ ] ✅ Webhook de pagos recibe evento QR_GENERATED
+- [ ] ✅ Logs muestran roles, intents y estado de pago
 - [ ] ✅ Sin errores en la consola
 
 ---
 
 ## 📊 ¿Qué Ver en los Logs?
 
-### Para mensaje simple:
+### Para intento booking:
 ```
 [WhatsappService] Mensaje recibido de: 5215551234567
 [WhatsappService] Tipo de mensaje: text
-[WhatsappService] Texto: Hola
-[WhatsappService] Mensaje wamid.test123 marcado como leído
+[AgentRouterService] Intent INTENT_BOOKING atendido...
+[AppointmentAgentService] Solicitud de cita para  ...
 ```
 
-### Para mensaje con context:
+### Para intento shopping:
 ```
-[WhatsappService] Mensaje recibido de: 5215551234567
-[WhatsappService] Tipo de mensaje: text
-[WhatsappService] Mensaje con contexto - Origen: 15550783881, ID: wamid.context123
-[WhatsappService] Producto referenciado - Catálogo: 123456, Producto: PROD_001
-[WhatsappService] Texto: ¿Está disponible?
+[SalesAgentService] Estado actual STATE_CART para 5215551234567
+[SalesAgentService] Generando tu código QR con el banco...
 ```
 
-### Para mensaje con referral:
+### Para webhook de pagos:
 ```
-[WhatsappService] Mensaje recibido de: 5215551234567
-[WhatsappService] Tipo de mensaje: text
-[WhatsappService] Mensaje desde anuncio - Tipo: ad, URL: https://fb.me/test123
-[WhatsappService] Headline: Ofertas Especiales
-[WhatsappService] Body: ¡50% de descuento!
-[WhatsappService] CTWA Click ID: test_click_id_12345
-[WhatsappService] Texto: Quiero más información
+[PaymentWebhookController] Pago webhook: QR_GENERATED para <order>
+[WhatsappService] Mensaje ... marcado como leído
 ```
 
 ---

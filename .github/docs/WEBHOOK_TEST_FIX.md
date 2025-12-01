@@ -1,5 +1,7 @@
 # 🐛 Fix: Error en Webhook con Payload de Prueba de Meta
 
+> **v2.1.0**: El flujo de normalización sigue vigente y ahora alimenta al Router/Agentes después de sanitizar el payload.
+
 ## 📋 Problema Identificado
 
 ### Síntoma

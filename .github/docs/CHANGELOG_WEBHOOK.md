@@ -1,5 +1,51 @@
 # Changelog - WhatsApp Messages Webhook
 
+## [2.2.0] - 2025-11-28
+
+### 🌐 Multi-tenant + Supabase
+- Nuevo `SupabaseService` con conexión obligatoria al transaction pooler (puerto 6543 + `pgbouncer=true`).
+- `IdentityService` resuelve la compañía usando `metadata.phone_number_id` y consulta `company_users` para asignar `ROLE_ADMIN`/`ROLE_CLIENT` por tenant.
+- Se añade soporte opcional para `DEFAULT_COMPANY_*` en entornos locales cuando no hay base de datos.
+
+### 🧠 Sesiones Google ADK
+- `AdkSessionService` persiste el contexto en la tabla `adk_sessions` y combina datos de configuración (`company_tone`, `inventory_context`, fecha actual, rol).
+- Cada mensaje actualiza `last_intent`, `last_user_text` y tokens sanitizados para mantener el historial conversacional por tenant.
+
+### 💳 Pagos con company_id
+- `SalesAgentService` crea órdenes por `company_id`, agrega el prefijo del tenant en `orders.details` y almacena las órdenes en mapas por compañía.
+- `PaymentClientService` ahora envía `company_id` en `/generate-qr`, `/verify-payment` y `/set-2fa` para que el microservicio seleccione las credenciales correctas.
+- El webhook de pagos notifica automáticamente a todos los administradores de la empresa (`company_users.role = 'ADMIN'`) cuando se requiere 2FA.
+
+### ⚙️ Nuevas Variables de Entorno
+- `SUPABASE_DB_URL`, `SUPABASE_DB_POOL_SIZE` y los opcionales `DEFAULT_COMPANY_*` documentados en `.env`, `QUICK_START.md` y `WHATSAPP_MODULE_README.md`.
+
+### ✅ Otros
+- `RouterMessageContext` incluye `tenant`, `role` y snapshot ADK.
+- `SalesAgentService` evita colisiones cuando el mismo cliente conversa con múltiples compañías.
+
+## [2.1.0] - 2025-11-28
+
+### 🧠 Orquestador + Seguridad
+- Nuevo `AgentRouterService` con detección de intents (`booking`, `shopping`, `reporting`, `2FA`).
+- `IdentityService` asigna roles por número y bloquea intents restringidos a `ROLE_ADMIN`.
+- `SanitizationService` reemplaza PII (teléfonos, correos, direcciones, nombres) por tokens antes de invocar agentes o LLMs.
+
+### 💳 Flujo de Pagos Async
+- `SalesAgentService` implementa el state machine solicitado (`STATE_CART` → `STATE_COMPLETED`).
+- Cliente HTTP `PaymentClientService` con fallback mock cuando no hay `PAYMENT_API_KEY`.
+- Nuevo webhook `POST /webhook/payments/result` que atiende eventos `QR_GENERATED`, `VERIFICATION_RESULT`, `LOGIN_2FA_REQUIRED` y dispara envíos automáticos de texto/QR.
+
+### 🧾 Limpieza y Endpoints
+- Se eliminaron los endpoints legacy `/webhook/send*` y sus DTOs asociados.
+- `WhatsappService` ahora sólo responde mediante el Router y cuenta con subida de imágenes en base64 (QR dinámicos).
+
+### 📚 Documentación
+- Todos los archivos en `.github/docs` describen la capa de seguridad, el router, los agentes y el nuevo endpoint de pagos.
+- QUICK_START y TESTING_EXAMPLES incluyen pruebas para intents y para el webhook de pagos.
+
+### ✅ Validación
+- `npm run build` exitoso con las nuevas dependencias (`form-data`).
+
 ## [2.0.0] - 2025-10-30
 
 ### ✨ Nuevas Características

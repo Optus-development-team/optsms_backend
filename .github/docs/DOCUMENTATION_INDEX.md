@@ -1,5 +1,14 @@
 # 📚 Índice de Documentación - WhatsApp Webhook
 
+## 🆕 Qué Hay de Nuevo (v2.2.0)
+
+- **Resolución multi-tenant**: Se consulta Supabase (`companies`, `company_users`) usando `metadata.phone_number_id` y se inyecta `company_id` en todos los flujos.
+- **Sesiones Google ADK**: Persistencia del contexto conversacional (`adk_sessions`) con `company_tone`, `inventory_context`, rol y último intent.
+- **Pagos conscientes del tenant**: Todos los payloads (`/generate-qr`, `/verify-payment`, `/set-2fa`) incluyen `company_id` y las alertas 2FA se envían a los admins del tenant.
+- **Orquestador central**: Todos los textos pasan por un Router que asigna intents a los agentes de Citas, Ventas/Payments, Reportes y 2FA.
+- **Sanitización de PII**: Correos, teléfonos, direcciones y nombres se tokenizan antes de llegar al modelo conversacional.
+- **Documentación al día**: Todos los archivos de esta carpeta reflejan el nuevo flujo y eliminan los endpoints legacy de envío manual (`/webhook/send*`).
+
 ## 🎯 Comienza Aquí
 
 ¿Primera vez? Sigue este orden:
@@ -270,8 +279,8 @@
 
 ## 🔄 Actualizaciones
 
-**Última actualización:** 30 de octubre de 2025  
-**Versión:** 2.0.0  
+**Última actualización:** 28 de noviembre de 2025  
+**Versión:** 2.2.0  
 **Compatible con:** WhatsApp Cloud API v21.0
 
 ---

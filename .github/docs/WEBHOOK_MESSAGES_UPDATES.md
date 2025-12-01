@@ -1,10 +1,51 @@
 # Actualizaciones del Webhook de WhatsApp Messages
 
-## Resumen de Cambios
+## Resumen de Cambios (v2.1.0)
 
-Se han implementado modificaciones completas al webhook de messages de WhatsApp siguiendo la documentación oficial de Meta/Facebook:
+- **Capa de identidad + sanitización** antes de procesar cada texto (tokens `[PHONE_*]`, `[EMAIL_*]`, etc.).
+- **Router Mixture of Experts** que enruta hacia agentes de Citas, Ventas/Pagos, Reportes o 2FA según la intención detectada.
+- **State machine de pagos** integrado con el microservicio externo y nuevo webhook `POST /webhook/payments/result`.
+- **Sustitución de endpoints legacy** `/webhook/send*`; sólo se exponen las rutas definidas en las instrucciones.
+- **Documentación y ejemplos** actualizados para cubrir intents, roles y eventos de pago.
+
+Se mantiene el soporte completo de Meta/Facebook:
 - [Messages Webhook Reference](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/reference/messages)
 - [Text Messages Reference](https://developers.facebook.com/docs/whatsapp/cloud-api/webhooks/reference/messages/text)
+
+---
+
+## 0. Capa de Seguridad y Roles
+
+- `IdentityService` compara `sender_id` con `ADMIN_PHONE_NUMBER` → asigna `ROLE_ADMIN` o `ROLE_CLIENT`.
+- `SanitizationService` detecta teléfonos, emails, direcciones y nombres para reemplazarlos por tokens antes de loggear o invocar agentes.
+- Intents protegidos (`INTENT_REPORTING`, `INTENT_2FA_REPLY`) sólo responden si el rol es administrador.
+
+---
+
+## 0.1 Router y Agentes
+
+| Intent detectado | Palabras clave | Agente | Descripción |
+|------------------|----------------|--------|-------------|
+| `INTENT_BOOKING` | cita, agenda, calendario | Appointment Agent | Consulta disponibilidad SQL + reserva (modo demo). |
+| `INTENT_SHOPPING` | pagar, pedido, qr, checkout | Sales Agent | Gestiona carrito + pagos + state machine. |
+| `INTENT_REPORTING` | reporte, KPI, inventario | Reporting Agent | Resumen ejecutivo (solo admins). |
+| `INTENT_2FA_REPLY` | token, código, 2fa | Sales Agent (Sec) | Envía `POST /v1/fiat/set-2fa`. |
+
+Cada agente responde con una o varias acciones (`RouterAction[]`) que `WhatsappService` convierte en mensajes.
+
+---
+
+## 0.2 Webhook de Pagos
+
+- **Nuevo endpoint:** `POST /webhook/payments/result` documentado en Swagger.
+- **Eventos soportados:** `QR_GENERATED`, `VERIFICATION_RESULT`, `LOGIN_2FA_REQUIRED`.
+- **Acciones automáticas:**
+  - Envío de QR (base64 → upload a Graph API).
+  - Mensajes de confirmación / reintentos.
+  - Alertas al ADMIN cuando el banco solicita 2FA.
+- **State Machine:** `STATE_CART → STATE_AWAITING_QR → STATE_QR_SENT → STATE_VERIFYING → STATE_COMPLETED`.
+
+---
 
 ## Nuevas Funcionalidades Implementadas
 

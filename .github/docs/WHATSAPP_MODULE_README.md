@@ -9,13 +9,14 @@ Implementación completa del webhook de messages de WhatsApp Cloud API v21.0 par
 ## ✨ Características
 
 ### 🔥 Principales
-- ✅ **Webhook completo** para mensajes entrantes y salientes
-- ✅ **Context detection** - Detecta mensajes desde productos y catálogos
-- ✅ **Referral tracking** - Tracking completo de anuncios de clic a WhatsApp
-- ✅ **14 tipos de mensajes** soportados
-- ✅ **Handlers específicos** para cada tipo de mensaje
-- ✅ **Respuestas automáticas** personalizables
-- ✅ **Logging detallado** de todas las interacciones
+- ✅ **Router Mixture of Experts** con intents `booking`, `shopping`, `reporting`, `2FA`.
+- ✅ **Capa de identidad + sanitización** para proteger PII antes de delegar en agentes.
+- ✅ **Multi-tenant en Supabase**: resolución de `company_id` por `phone_number_id`, sesiones ADK persistentes y roles dinámicos.
+- ✅ **State machine de pagos** integrada con el microservicio externo + webhook dedicado.
+- ✅ **Context & Referral** siguen disponibles y se usan como señales de negocio.
+- ✅ **14 tipos de mensajes** soportados; textos se enrutan, el resto recibe confirmaciones guiadas.
+- ✅ **Subida de media** (ej. QR base64) al Graph API usando `form-data`.
+- ✅ **Logging detallado** (roles, intents, estados de pago).
 
 ### 🛡️ Seguridad y Validación
 - ✅ Verificación de webhook con token
@@ -54,7 +55,15 @@ WHATSAPP_API_VERSION=v21.0
 WHATSAPP_PHONE_NUMBER_ID=tu_phone_number_id
 WHATSAPP_API_TOKEN=tu_api_token
 WHATSAPP_VERIFY_TOKEN=tu_verify_token
+SUPABASE_DB_URL=postgresql://USER:PASSWORD@db.supabase.co:6543/postgres?pgbouncer=true&sslmode=require
+SUPABASE_DB_POOL_SIZE=5
+# Opcional para sandbox local
+DEFAULT_COMPANY_ID=00000000-0000-0000-0000-000000000000
+DEFAULT_COMPANY_NAME=Optus Sandbox
+DEFAULT_COMPANY_CONFIG='{"company_tone":"Neutro","inventory_context":"General"}'
 ```
+
+> El backend siempre debe conectarse al **Supabase Transaction Pooler (Supavisor)** en el puerto `6543` y forzar `pgbouncer=true` / `sslmode=require` para evitar agotar conexiones persistentes.
 
 ### 2. Verificar Webhook
 
@@ -62,16 +71,9 @@ WHATSAPP_VERIFY_TOKEN=tu_verify_token
 curl -X GET "http://localhost:3000/webhook?hub.mode=subscribe&hub.verify_token=tu_verify_token&hub.challenge=test"
 ```
 
-### 3. Enviar Mensaje de Prueba
+### 3. Pruebas guiadas
 
-```bash
-curl -X POST http://localhost:3000/webhook/send \
-  -H "Content-Type: application/json" \
-  -d '{
-    "to": "5215551234567",
-    "message": "Hola desde la API"
-  }'
-```
+Sigue los comandos descritos en [QUICK_START.md](./QUICK_START.md) para probar intents (cita, pago) y el webhook de pagos.
 
 ---
 
@@ -173,45 +175,35 @@ curl -X POST http://localhost:3000/webhook/send \
 
 ---
 
-### POST /webhook/send
-**Envío de mensaje de texto**
+### POST /webhook/payments/result
+**Eventos entrantes del microservicio de pagos**
 
-**Body:**
+**Body (ejemplo QR):**
 ```json
 {
-  "to": "5215551234567",
-  "message": "Hola, ¿cómo estás?"
+  "event_type": "QR_GENERATED",
+  "order_id": "uuid",
+  "qr_image_base64": "...",
+  "mime_type": "image/png"
 }
 ```
 
-**Respuesta:** Respuesta de WhatsApp Cloud API
-
----
-
-### POST /webhook/send-image
-**Envío de imagen**
-
-**Body:**
+**Body (verificación):**
 ```json
 {
-  "to": "5215551234567",
-  "imageUrl": "https://ejemplo.com/imagen.jpg",
-  "caption": "Mira esta imagen"
+  "event_type": "VERIFICATION_RESULT",
+  "order_id": "uuid",
+  "success": true,
+  "ref": "BANCO-123"
 }
 ```
 
----
-
-### POST /webhook/send-template
-**Envío de plantilla**
-
-**Body:**
+**Body (2FA):**
 ```json
 {
-  "to": "5215551234567",
-  "templateName": "hello_world",
-  "languageCode": "es",
-  "components": []
+  "event_type": "LOGIN_2FA_REQUIRED",
+  "order_id": "uuid",
+  "timestamp": "2025-11-28T12:00:00Z"
 }
 ```
 
@@ -243,15 +235,24 @@ npm run test:cov
 
 ```
 src/whatsapp/
+├── agents/
+│   ├── appointment-agent.service.ts    ← INTENT_BOOKING
+│   ├── sales-agent.service.ts          ← Pagos + state machine
+│   └── reporting-agent.service.ts      ← Resúmenes admin
 ├── dto/
-│   ├── send-image-message.dto.ts
-│   ├── send-template-message.dto.ts
-│   ├── send-text-message.dto.ts
-│   └── whatsapp-webhook.dto.ts         ← DTOs completos del webhook
+│   ├── payment-webhook.dto.ts          ← Eventos QR/2FA
+│   └── whatsapp-webhook.dto.ts         ← Modelos oficiales Meta
+├── services/
+│   ├── agent-router.service.ts         ← Mixture of Experts
+│   ├── identity.service.ts             ← Roles por número
+│   ├── sanitization.service.ts         ← Tokenización PII
+│   └── payment-client.service.ts       ← Cliente HTTP microservicio pagos
 ├── interfaces/
-│   └── whatsapp.interface.ts           ← Interfaces TypeScript
-├── whatsapp.controller.ts              ← Endpoints del webhook
-├── whatsapp.service.ts                 ← Lógica de negocio y handlers
+│   └── whatsapp.interface.ts           ← Tipos WhatsApp Cloud API
+├── payment-webhook.controller.ts       ← POST /webhook/payments/result
+├── whatsapp.controller.ts              ← GET/POST /webhook
+├── whatsapp.service.ts                 ← Ingesta + envío de acciones
+├── whatsapp.types.ts                   ← Enums y contratos internos
 └── whatsapp.module.ts                  ← Módulo NestJS
 ```
 
@@ -261,44 +262,15 @@ src/whatsapp/
 
 ### Modificar Respuestas Automáticas
 
-**Archivo:** `src/whatsapp/whatsapp.service.ts`
+- Ajusta keywords/intents en `AgentRouterService.detectIntent()`.
+- Personaliza diálogos por agente (`agents/*.service.ts`).
+- Extiende `SalesAgentService` si necesitas más estados o integraciones.
 
-```typescript
-private async handleTextMessage(
-  message: WhatsAppIncomingMessage,
-): Promise<void> {
-  // Tu lógica personalizada aquí
-  
-  if (message.referral) {
-    // Lógica para mensajes desde anuncios
-  }
-  
-  if (message.context?.referred_product) {
-    // Lógica para mensajes desde productos
-  }
-  
-  // Respuestas personalizadas según keywords
-  const text = message.text.body.toLowerCase();
-  if (text.includes('precio')) {
-    // Responder con información de precios
-  }
-}
-```
+### Agregar Nuevos Agentes/Intents
 
-### Agregar Nuevos Handlers
-
-```typescript
-private async handleNuevoTipo(
-  message: WhatsAppIncomingMessage,
-): Promise<void> {
-  // Tu implementación
-}
-
-// Agregar al switch en handleMessage()
-case 'nuevo_tipo':
-  await this.handleNuevoTipo(message);
-  break;
-```
+1. Declara el nuevo intent en `whatsapp.types.ts`.
+2. Implementa un servicio en `agents/` que devuelva `RouterAction[]`.
+3. Registra el agente en el módulo y en el `switch` del router.
 
 ---
 
@@ -387,8 +359,8 @@ Para soporte técnico:
 
 ---
 
-**Versión:** 2.0.0  
-**Última actualización:** 30 de octubre de 2025  
+**Versión:** 2.2.0  
+**Última actualización:** 28 de noviembre de 2025  
 **Compatible con:** WhatsApp Cloud API v21.0
 
 ---

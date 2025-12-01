@@ -1,5 +1,14 @@
 # Ejemplos de Testing - Webhook de WhatsApp
 
+## Novedades v2.1.0 (Router + Pagos)
+
+- **Intent booking** – usa el payload `wamid.booking123` del QUICK_START para validar que el agente de citas responda.
+- **Intent shopping** – payload `wamid.sales123` debe dejar la orden en `STATE_AWAITING_QR` y loggear la llamada a `/generate-qr` (mock).
+- **Webhook de pagos** – envía `QR_GENERATED`, `VERIFICATION_RESULT` y `LOGIN_2FA_REQUIRED` a `POST /webhook/payments/result`.
+- **Respuesta 2FA (admin)** – desde el número configurado en `ADMIN_PHONE_NUMBER`, manda `Token 123456` y valida que el servicio invoque `PaymentClientService.submitTwoFactor`.
+
+Los ejemplos completos siguen abajo y también se encuentran en QUICK_START.md.
+
 ## 1. Testing con cURL
 
 ### Verificación del Webhook (GET)
