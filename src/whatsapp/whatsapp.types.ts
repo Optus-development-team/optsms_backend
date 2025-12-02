@@ -81,4 +81,6 @@ export interface PaymentOrder {
   awaitingTwoFa?: boolean;
   lastUpdate: Date;
   companyId: string;
+  supabaseOrderId?: string;
+  userId?: string;
 }

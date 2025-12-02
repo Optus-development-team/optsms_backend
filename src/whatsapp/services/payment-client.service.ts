@@ -14,6 +14,10 @@ interface VerifyPaymentResponse {
   mocked: boolean;
 }
 
+interface WarmupResponse {
+  requiresTwoFactor: boolean;
+}
+
 @Injectable()
 export class PaymentClientService {
   private readonly logger = new Logger(PaymentClientService.name);
@@ -29,6 +33,37 @@ export class PaymentClientService {
       'http://payment-backend-service',
     );
     this.apiKey = this.configService.get<string>('PAYMENT_API_KEY', '');
+  }
+
+  async warmupBankSession(companyId: string): Promise<WarmupResponse> {
+    if (!this.apiKey) {
+      return { requiresTwoFactor: false };
+    }
+
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(
+          `${this.baseUrl}/v1/fiat/warmup`,
+          { company_id: companyId },
+          { headers: this.buildHeaders() },
+        ),
+      );
+
+      const data = response.data as {
+        requires_2fa?: boolean;
+        status?: string;
+      };
+
+      return {
+        requiresTwoFactor:
+          Boolean(data?.requires_2fa) || data?.status === 'LOGIN_2FA_REQUIRED',
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Warmup falló para ${companyId}: ${(error as Error).message}`,
+      );
+      return { requiresTwoFactor: false };
+    }
   }
 
   async generateQr(

@@ -10,6 +10,7 @@ import {
   RouterResult,
   UserRole,
 } from '../whatsapp.types';
+import { OnboardingService } from './onboarding.service';
 
 @Injectable()
 export class AgentRouterService {
@@ -24,10 +25,22 @@ export class AgentRouterService {
     private readonly appointmentAgent: AppointmentAgentService,
     private readonly salesAgent: SalesAgentService,
     private readonly reportingAgent: ReportingAgentService,
+    private readonly onboardingService: OnboardingService,
   ) {}
 
   async routeTextMessage(context: RouterMessageContext): Promise<RouterResult> {
     const sanitized = this.sanitizationService.sanitize(context.originalText);
+
+    const onboarding = await this.onboardingService.run(context);
+    if (onboarding) {
+      return {
+        role: context.role,
+        intent: 'FALLBACK',
+        sanitized,
+        ...onboarding,
+      };
+    }
+
     const intent = this.detectIntent(sanitized.normalizedText);
     const role = context.role;
 

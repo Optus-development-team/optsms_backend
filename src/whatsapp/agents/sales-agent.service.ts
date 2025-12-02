@@ -7,13 +7,15 @@ import type {
   RouterAction,
   SanitizedTextResult,
 } from '../whatsapp.types';
-import { PaymentState } from '../whatsapp.types';
+import { PaymentState, UserRole } from '../whatsapp.types';
 import { PaymentClientService } from '../services/payment-client.service';
 import { IdentityService } from '../services/identity.service';
 import type {
   PaymentWebhookDto,
   PaymentWebhookAction,
 } from '../dto/payment-webhook.dto';
+import { OrdersSyncService } from '../services/orders-sync.service';
+import { CompanyIntegrationsService } from '../services/company-integrations.service';
 
 @Injectable()
 export class SalesAgentService {
@@ -24,6 +26,8 @@ export class SalesAgentService {
   constructor(
     private readonly paymentClient: PaymentClientService,
     private readonly identityService: IdentityService,
+    private readonly ordersSyncService: OrdersSyncService,
+    private readonly companyIntegrations: CompanyIntegrationsService,
   ) {}
 
   async handleShoppingIntent(
@@ -52,7 +56,11 @@ export class SalesAgentService {
     if (amount && order.amount !== amount) {
       order.amount = amount;
       order.lastUpdate = new Date();
+      await this.ensureOrderUser(order, context.role);
+      order.supabaseOrderId = await this.ordersSyncService.syncDraft(order);
     }
+
+    await this.ensureOrderUser(order, context.role);
 
     const wantsCheckout = /(pagar|checkout|qr|cobrar|generar)/.test(
       sanitized.normalizedText,
@@ -87,6 +95,7 @@ export class SalesAgentService {
       );
       order.state = PaymentState.AWAITING_QR;
       order.lastUpdate = new Date();
+      await this.ordersSyncService.updateStatus(order);
       actions.push({
         type: 'text',
         text: 'En segundos recibirás la imagen del QR. Te aviso apenas llegue del banco.',
@@ -106,6 +115,7 @@ export class SalesAgentService {
         order.orderId,
         order.details,
       );
+      await this.ordersSyncService.updateStatus(order);
       actions.push({
         type: 'text',
         text: 'Verificando con el banco... esto puede tardar hasta 60 segundos.',
@@ -170,6 +180,11 @@ export class SalesAgentService {
     if (delivered) {
       pendingOrder.awaitingTwoFa = false;
       pendingOrder.state = PaymentState.VERIFYING;
+      await this.companyIntegrations.markTwoFactorAttention(
+        pendingOrder.companyId,
+        false,
+      );
+      await this.ordersSyncService.updateStatus(pendingOrder);
     }
 
     return {
@@ -200,6 +215,7 @@ export class SalesAgentService {
     switch (payload.event_type) {
       case 'QR_GENERATED':
         order.state = PaymentState.QR_SENT;
+        await this.ordersSyncService.updateStatus(order);
         return [
           {
             to: order.clientPhone,
@@ -217,15 +233,21 @@ export class SalesAgentService {
       case 'VERIFICATION_RESULT':
         if (payload.success) {
           order.state = PaymentState.COMPLETED;
+          await this.companyIntegrations.markTwoFactorAttention(
+            order.companyId,
+            false,
+          );
+          await this.ordersSyncService.updateStatus(order);
           return [
             {
               to: order.clientPhone,
               type: 'text',
-              text: '✅ Pago confirmado. En breve recibirás tu recibo digital.',
+              text: '✅ Pago confirmado. ¿Deseas agendar la entrega? Escribe *Agendar entrega* y lo coordinamos.',
             },
           ];
         }
         order.state = PaymentState.CART;
+        await this.ordersSyncService.updateStatus(order);
         return [
           {
             to: order.clientPhone,
@@ -236,6 +258,11 @@ export class SalesAgentService {
       case 'LOGIN_2FA_REQUIRED': {
         order.awaitingTwoFa = true;
         order.state = PaymentState.VERIFYING;
+        await this.companyIntegrations.markTwoFactorAttention(
+          order.companyId,
+          true,
+        );
+        await this.ordersSyncService.updateStatus(order);
         const actions: PaymentWebhookAction[] = [
           {
             to: order.clientPhone,
@@ -272,6 +299,25 @@ export class SalesAgentService {
 
     this.ordersById.set(order.orderId, order);
     return order;
+  }
+
+  private async ensureOrderUser(
+    order: PaymentOrder,
+    role: UserRole,
+  ): Promise<void> {
+    if (order.userId) {
+      return;
+    }
+
+    const userId = await this.identityService.ensureCompanyUser(
+      order.companyId,
+      order.clientPhone,
+      role,
+    );
+
+    if (userId) {
+      order.userId = userId;
+    }
   }
 
   private buildClientKey(companyId: string, clientPhone: string): string {

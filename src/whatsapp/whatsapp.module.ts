@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { WhatsappController } from './whatsapp.controller';
 import { WhatsappService } from './whatsapp.service';
 import { PaymentWebhookController } from './payment-webhook.controller';
+import { GoogleAuthController } from './google-auth.controller';
 import { IdentityService } from './services/identity.service';
 import { SanitizationService } from './services/sanitization.service';
 import { AgentRouterService } from './services/agent-router.service';
@@ -13,10 +14,16 @@ import { ReportingAgentService } from './agents/reporting-agent.service';
 import { PaymentClientService } from './services/payment-client.service';
 import { SupabaseService } from './services/supabase.service';
 import { AdkSessionService } from './services/adk-session.service';
+import { EncryptionService } from './services/encryption.service';
+import { CompanyIntegrationsService } from './services/company-integrations.service';
+import { GoogleOauthService } from './services/google-oauth.service';
+import { OnboardingService } from './services/onboarding.service';
+import { OrdersSyncService } from './services/orders-sync.service';
+import { PaymentWarmupService } from './services/payment-warmup.service';
 
 @Module({
   imports: [HttpModule, ConfigModule],
-  controllers: [WhatsappController, PaymentWebhookController],
+  controllers: [WhatsappController, PaymentWebhookController, GoogleAuthController],
   providers: [
     WhatsappService,
     IdentityService,
@@ -28,6 +35,12 @@ import { AdkSessionService } from './services/adk-session.service';
     PaymentClientService,
     SupabaseService,
     AdkSessionService,
+    EncryptionService,
+    CompanyIntegrationsService,
+    GoogleOauthService,
+    OnboardingService,
+    OrdersSyncService,
+    PaymentWarmupService,
   ],
   exports: [WhatsappService],
 })

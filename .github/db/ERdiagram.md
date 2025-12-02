@@ -1,6 +1,6 @@
 // --------------------------------------------------------
 // PROYECTO: OptuSBMS (SaaS Core)
-// CONTEXTO: Integración con BMS_PAYMENT_BACKEND (Playwright)
+// CONTEXTO: Full Schema (Pagos + Citas + Ventas)
 // --------------------------------------------------------
 
 Project OptuSBMS {
@@ -9,27 +9,36 @@ Project OptuSBMS {
 }
 
 // --------------------------------------------------------
-// ENUMS (Máquina de Estados)
+// ENUMS
 // --------------------------------------------------------
 
 Enum user_role {
-  ADMIN   // Dueño (Recibe alertas de 2FA)
+  ADMIN   // Dueño
   CLIENT  // Cliente final
 }
 
 Enum order_status {
-  CART              // Selección de productos
-  AWAITING_QR       // POST /v1/fiat/generate-qr enviado (Job Queued)
-  QR_SENT           // Webhook QR_GENERATED recibido (Imagen guardada)
-  VERIFYING_PAYMENT // POST /v1/fiat/verify-payment enviado
-  COMPLETED         // Webhook VERIFICATION_RESULT {success: true}
-  FAILED            // Error en Playwright o Timeout
-  REQUIRES_2FA      // Webhook LOGIN_2FA_REQUIRED recibido (Pausa el flujo)
+  CART              
+  AWAITING_QR       
+  QR_SENT           
+  VERIFYING_PAYMENT 
+  COMPLETED         
+  FAILED            
+  REQUIRES_2FA      
+}
+
+Enum appointment_status {
+  PENDING_SYNC      // Guardado localmente, en cola para subir a Google
+  CONFIRMED         // Sincronizado exitosamente con Google (tiene ID)
+  CANCELLED         // Cancelado (Soft delete en GCal)
+  RESCHEDULED       // Reprogramado
+  COMPLETED         // La fecha ya pasó
 }
 
 Enum integration_provider {
-  BANK_ECOFUTURO    // Usa FiatBrowserService (Playwright)
-  WALLET_TRON       // Futuro: CryptoAutomation
+  BANK_ECOFUTURO    
+  GOOGLE_CALENDAR   // Nuevo: Para OAuth2 Tokens
+  WALLET_TRON       
 }
 
 // --------------------------------------------------------
@@ -40,10 +49,7 @@ Table companies {
   id uuid [pk, default: `gen_random_uuid()`]
   name varchar [not null]
   whatsapp_phone_id varchar [unique, not null, note: 'Identificador para Webhooks de WhatsApp']
-  
-  // Configuración Global
-  config jsonb [default: '{}', note: 'Configuración de tono, horarios, etc.']
-  
+  config jsonb [default: '{}']
   created_at timestamptz [default: `now()`]
   updated_at timestamptz [default: `now()`]
 }
@@ -51,12 +57,9 @@ Table companies {
 Table company_users {
   id uuid [pk, default: `gen_random_uuid()`]
   company_id uuid [ref: > companies.id, not null]
-  phone varchar [not null, note: 'WhatsApp sender_id']
+  phone varchar [not null]
   role user_role [default: 'CLIENT']
-  
-  // Memoria Vectorial (Google ADK Session Context)
-  embedding vector(1536) [note: 'Perfilamiento del usuario para el LLM']
-  
+  embedding vector(1536) 
   created_at timestamptz [default: `now()`]
   
   indexes {
@@ -65,7 +68,7 @@ Table company_users {
 }
 
 // --------------------------------------------------------
-// INTEGRACIONES (La Bóveda de Credenciales)
+// INTEGRACIONES
 // --------------------------------------------------------
 
 Table company_integrations {
@@ -73,25 +76,18 @@ Table company_integrations {
   company_id uuid [ref: > companies.id, not null]
   provider integration_provider [not null]
   
-  // CREDENCIALES (Cifradas AES-256)
-  // Para BANK_ECOFUTURO, el JSON descifrado debe ser:
-  // { 
-  //   "econet_user": "...", 
-  //   "econet_pass": "..." 
-  // }
-  // Estas se inyectan en los selectores #usuario y #txtPassword del scraper.
+  // Contenido dinámico cifrado:
+  // - BANK_ECOFUTURO: { user, pass }
+  // - GOOGLE_CALENDAR: { refresh_token, access_token, expiry_date }
   encrypted_credentials jsonb [not null] 
   
-  // Estado de Salud de la Integración
   is_active boolean [default: true]
-  needs_2fa_attention boolean [default: false, note: 'True si recibimos LOGIN_2FA_REQUIRED']
-  last_2fa_request_at timestamptz
-  
+  needs_2fa_attention boolean [default: false]
   updated_at timestamptz [default: `now()`]
 }
 
 // --------------------------------------------------------
-// VENTAS Y ORQUESTACIÓN DE PAGOS
+// VENTAS (Agente Ventas)
 // --------------------------------------------------------
 
 Table products {
@@ -100,7 +96,7 @@ Table products {
   sku varchar
   name varchar
   price decimal(10, 2)
-  stock_quantity int [note: 'Master Inventory']
+  stock_quantity int 
   image_url text
 }
 
@@ -108,21 +104,10 @@ Table orders {
   id uuid [pk, default: `gen_random_uuid()`]
   company_id uuid [ref: > companies.id, not null]
   user_id uuid [ref: > company_users.id, not null]
-  
-  total_amount decimal(12, 2) [not null, note: 'Se usa para validar campo #monto en Scraper']
+  total_amount decimal(12, 2) [not null]
   status order_status [default: 'CART']
-  
-  // DATOS CRÍTICOS PARA EL SCRAPER
-  details varchar [not null, note: 'Glosa Única (REF-UUID). El scraper busca esto en el <td> del extracto bancario.']
-  
-  // METADATA DEL PROCESO DE PAGO
-  // {
-  //   "qr_image_base64": "data:image/png...",  <-- Guardado del webhook QR_GENERATED
-  //   "playwright_job_id": "...",              <-- ID interno del JobQueueService
-  //   "bank_ref": "..."                        <-- Referencia extraída si es exitoso
-  // }
+  details varchar [not null]
   metadata jsonb [default: '{}'] 
-  
   created_at timestamptz [default: `now()`]
   updated_at timestamptz [default: `now()`]
 }
@@ -136,15 +121,46 @@ Table order_items {
 }
 
 // --------------------------------------------------------
+// CITAS Y CALENDARIO (Agente Citas) - ¡AGREGADO!
+// --------------------------------------------------------
+
+Table appointments {
+  id uuid [pk, default: `gen_random_uuid()`]
+  company_id uuid [ref: > companies.id, not null]
+  user_id uuid [ref: > company_users.id, not null]
+  
+  // Datos Temporales
+  start_time timestamptz [not null]
+  end_time timestamptz [not null]
+  
+  status appointment_status [default: 'PENDING_SYNC']
+  
+  // Sincronización Híbrida (Crucial)
+  google_event_id varchar [note: 'ID devuelto por GCal. Null si aun no se sincroniza.']
+  google_html_link varchar [note: 'Link directo al evento en GCal web']
+  
+  notes text
+  
+  created_at timestamptz [default: `now()`]
+  updated_at timestamptz [default: `now()`]
+
+  indexes {
+    // Índice vital para que el agente responda rápido "¿Tienes hueco mañana?"
+    (company_id, start_time, end_time) 
+    
+    // Índice para cuando llegue un Webhook de Google ("Evento modificado")
+    // y necesites encontrarlo rápido en tu BD
+    (google_event_id)
+  }
+}
+
+// --------------------------------------------------------
 // SESIONES DE CHAT (Google ADK)
 // --------------------------------------------------------
 
 Table adk_sessions {
-  session_id varchar [pk, note: 'company_id:user_phone']
+  session_id varchar [pk]
   company_id uuid [ref: > companies.id]
-  
-  // Contexto serializado del ADK (Memoria conversacional)
   context_data jsonb 
-  
   updated_at timestamptz [default: `now()`]
 }

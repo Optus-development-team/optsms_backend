@@ -122,6 +122,40 @@ export class IdentityService {
       .filter((phone) => Boolean(phone));
   }
 
+  async ensureCompanyUser(
+    companyId: string,
+    rawPhone: string,
+    role: UserRole,
+  ): Promise<string | null> {
+    if (!this.supabaseService.isEnabled()) {
+      return null;
+    }
+
+    const phone = this.cleanNumber(rawPhone);
+    const existing = await this.supabaseService.query<{ id: string }>(
+      `SELECT id FROM public.company_users
+       WHERE company_id = $1
+       AND regexp_replace(phone, '\\D', '', 'g') = $2
+       LIMIT 1`,
+      [companyId, phone],
+    );
+
+    if (existing[0]?.id) {
+      return existing[0].id;
+    }
+
+    const dbRole = role === UserRole.ADMIN ? 'ADMIN' : 'CLIENT';
+    const rows = await this.supabaseService.query<{ id: string }>(
+      `INSERT INTO public.company_users (company_id, phone, role)
+       VALUES ($1, $2, $3::user_role)
+       ON CONFLICT (company_id, phone) DO UPDATE SET role = EXCLUDED.role
+       RETURNING id`,
+      [companyId, phone, dbRole],
+    );
+
+    return rows[0]?.id ?? null;
+  }
+
   private cleanNumber(phone: string): string {
     return phone.replace(/\D/g, '');
   }

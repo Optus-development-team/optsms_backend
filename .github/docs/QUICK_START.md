@@ -14,6 +14,11 @@ WHATSAPP_VERIFY_TOKEN=tu_verify_token_aqui
 ADMIN_PHONE_NUMBER=5215550000000
 PAYMENT_BASE_URL=http://payment-backend-service
 PAYMENT_API_KEY=opcional_api_key
+GOOGLE_OAUTH_CLIENT_ID=tu_client_id.apps.googleusercontent.com
+GOOGLE_OAUTH_CLIENT_SECRET=tu_client_secret
+GOOGLE_OAUTH_REDIRECT_URI=https://tu-dominio.com/auth/google/callback
+GOOGLE_OAUTH_SCOPES=https://www.googleapis.com/auth/calendar,https://www.googleapis.com/auth/calendar.events
+GOOGLE_OAUTH_ENCRYPTION_KEY=clave_unica_para_tokens
 SUPABASE_DB_URL=postgresql://USER:PASSWORD@db.supabase.co:6543/postgres?pgbouncer=true&sslmode=require
 SUPABASE_DB_POOL_SIZE=5
 # Opcionales para desarrollo sin DB
