@@ -62,4 +62,5 @@ export interface PaymentWebhookAction {
   imageBase64?: string;
   mimeType?: string;
   caption?: string;
+  companyId: string;
 }

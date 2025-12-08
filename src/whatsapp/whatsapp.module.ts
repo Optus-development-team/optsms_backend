@@ -20,10 +20,15 @@ import { GoogleOauthService } from './services/google-oauth.service';
 import { OnboardingService } from './services/onboarding.service';
 import { OrdersSyncService } from './services/orders-sync.service';
 import { PaymentWarmupService } from './services/payment-warmup.service';
+import { GeminiService } from './services/gemini.service';
 
 @Module({
   imports: [HttpModule, ConfigModule],
-  controllers: [WhatsappController, PaymentWebhookController, GoogleAuthController],
+  controllers: [
+    WhatsappController,
+    PaymentWebhookController,
+    GoogleAuthController,
+  ],
   providers: [
     WhatsappService,
     IdentityService,
@@ -41,6 +46,7 @@ import { PaymentWarmupService } from './services/payment-warmup.service';
     OnboardingService,
     OrdersSyncService,
     PaymentWarmupService,
+    GeminiService,
   ],
   exports: [WhatsappService],
 })

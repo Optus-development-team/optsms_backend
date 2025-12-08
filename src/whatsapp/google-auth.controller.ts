@@ -43,14 +43,14 @@ export class GoogleAuthController {
         throw new Error('No se recibieron tokens de Google');
       }
 
-      await this.integrationsService.upsertGoogleCalendar(
-        decoded.company_id,
-        { ...tokens },
-      );
+      await this.integrationsService.upsertGoogleCalendar(decoded.company_id, {
+        ...tokens,
+      });
 
       await this.whatsappService.sendTextMessage(
         decoded.admin_phone,
         '✅ Calendario conectado exitosamente. Ya puedo sincronizar tus citas.',
+        { companyId: decoded.company_id },
       );
 
       res.send('<h1>Conexión exitosa</h1><p>Regresa a WhatsApp.</p>');

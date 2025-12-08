@@ -37,6 +37,8 @@ export interface TenantContext {
   companyName: string;
   companyConfig: Record<string, any>;
   phoneNumberId: string;
+  adminPhoneIds: string[];
+  displayPhoneNumber?: string | null;
 }
 
 export interface AdkSessionSnapshot {

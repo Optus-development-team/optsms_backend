@@ -16,6 +16,7 @@ import type {
 } from '../dto/payment-webhook.dto';
 import { OrdersSyncService } from '../services/orders-sync.service';
 import { CompanyIntegrationsService } from '../services/company-integrations.service';
+import { GeminiService } from '../services/gemini.service';
 
 @Injectable()
 export class SalesAgentService {
@@ -28,6 +29,7 @@ export class SalesAgentService {
     private readonly identityService: IdentityService,
     private readonly ordersSyncService: OrdersSyncService,
     private readonly companyIntegrations: CompanyIntegrationsService,
+    private readonly geminiService: GeminiService,
   ) {}
 
   async handleShoppingIntent(
@@ -52,7 +54,12 @@ export class SalesAgentService {
 
     this.logger.debug(`Estado actual ${order.state} para ${context.senderId}`);
 
-    const amount = this.extractAmount(sanitized.normalizedText);
+    // Usar Gemini para extraer monto con lenguaje natural
+    const amount = await this.extractAmountWithGemini(
+      sanitized.normalizedText,
+      context,
+    );
+
     if (amount && order.amount !== amount) {
       order.amount = amount;
       order.lastUpdate = new Date();
@@ -62,31 +69,39 @@ export class SalesAgentService {
 
     await this.ensureOrderUser(order, context.role);
 
-    const wantsCheckout = /(pagar|checkout|qr|cobrar|generar)/.test(
+    // Usar Gemini para detectar intención (pagar, consultar estado, etc.)
+    const intent = await this.detectShoppingIntentWithGemini(
       sanitized.normalizedText,
-    );
-    const confirmPaid = /(ya pague|ya pagué|listo|pagado|confirmo)/.test(
-      sanitized.normalizedText,
-    );
-    const wantsStatus = /(estatus|estado|cómo va|como va)/.test(
-      sanitized.normalizedText,
+      order.state,
+      context,
     );
 
     const actions: RouterAction[] = [];
 
     if (!order.amount) {
+      const response = await this.generateGeminiResponse(
+        context,
+        'El usuario no ha especificado un monto. Pídele amablemente que indique el monto total a pagar.',
+        order.state,
+      );
       actions.push({
         type: 'text',
-        text: 'Para preparar tu orden necesito el monto total. Escribe por ejemplo: *Pagar 1500 MXN*.',
+        text: response,
       });
       return { actions };
     }
 
-    if (wantsCheckout && order.state === PaymentState.CART) {
+    if (intent === 'checkout' && order.state === PaymentState.CART) {
+      const response = await this.generateGeminiResponse(
+        context,
+        'El usuario quiere generar el código QR para pagar. Confirma que estás procesando su solicitud.',
+        order.state,
+      );
       actions.push({
         type: 'text',
-        text: 'Generando tu código QR con el banco...',
+        text: response,
       });
+
       await this.paymentClient.generateQr(
         order.companyId,
         order.orderId,
@@ -96,6 +111,7 @@ export class SalesAgentService {
       order.state = PaymentState.AWAITING_QR;
       order.lastUpdate = new Date();
       await this.ordersSyncService.updateStatus(order);
+
       actions.push({
         type: 'text',
         text: 'En segundos recibirás la imagen del QR. Te aviso apenas llegue del banco.',
@@ -103,11 +119,17 @@ export class SalesAgentService {
       return { actions };
     }
 
-    if (confirmPaid && order.state === PaymentState.QR_SENT) {
+    if (intent === 'confirm_paid' && order.state === PaymentState.QR_SENT) {
+      const response = await this.generateGeminiResponse(
+        context,
+        'El usuario confirma que ya realizó el pago. Indica que estás verificando con el banco.',
+        order.state,
+      );
       actions.push({
         type: 'text',
-        text: 'Perfecto, pidiéndole al banco que confirme...',
+        text: response,
       });
+
       order.state = PaymentState.VERIFYING;
       order.lastUpdate = new Date();
       await this.paymentClient.verifyPayment(
@@ -116,6 +138,7 @@ export class SalesAgentService {
         order.details,
       );
       await this.ordersSyncService.updateStatus(order);
+
       actions.push({
         type: 'text',
         text: 'Verificando con el banco... esto puede tardar hasta 60 segundos.',
@@ -123,22 +146,205 @@ export class SalesAgentService {
       return { actions };
     }
 
-    if (wantsStatus) {
+    if (intent === 'status') {
+      const stateText = this.translateState(order.state);
+      const response = await this.generateGeminiResponse(
+        context,
+        `El usuario consulta el estado. La orden ${order.orderId} está en estado: ${stateText}`,
+        order.state,
+      );
       actions.push({
         type: 'text',
-        text: `Estado actual de tu orden ${order.orderId}: ${order.state}. Te aviso apenas cambie.`,
+        text: response,
       });
       return { actions };
     }
+
+    // Respuesta por defecto con Gemini
+    const defaultResponse = await this.generateGeminiResponse(
+      context,
+      `El usuario escribió algo relacionado con compras pero no detectamos una acción clara. Estado actual: ${order.state}. Sugiere opciones amablemente.`,
+      order.state,
+    );
 
     return {
       actions: [
         {
           type: 'text',
-          text: 'Estoy cuidando tu carrito. Escribe *Pagar* para generar el QR o indícame el monto si aún no lo has enviado.',
+          text: defaultResponse,
         },
       ],
     };
+  }
+
+  private async extractAmountWithGemini(
+    text: string,
+    _context: RouterMessageContext,
+  ): Promise<number | undefined> {
+    if (!this.geminiService.isEnabled()) {
+      return this.extractAmount(text);
+    }
+
+    try {
+      const model = this.geminiService.getModel();
+      if (!model) {
+        return this.extractAmount(text);
+      }
+
+      const instruction = `Extrae el monto monetario del texto. Acepta formatos naturales.
+
+Ejemplos:
+- "quiero pagar 1500" → 1500
+- "serían 25 dólares" → 25
+- "son dos mil pesos" → 2000
+- "total 450.50" → 450.50
+
+Texto: "${text}"
+
+Responde SOLO con el número (sin símbolos de moneda) o "null" si no hay monto.`;
+
+      const result = await this.geminiService.generateText(instruction);
+
+      const content = result?.trim() || null;
+      if (!content || content === 'null') {
+        return undefined;
+      }
+
+      const parsed = parseFloat(content);
+      return isNaN(parsed) ? undefined : parsed;
+    } catch (error) {
+      this.logger.error('Error extrayendo monto con Gemini:', error);
+      return this.extractAmount(text);
+    }
+  }
+
+  private async detectShoppingIntentWithGemini(
+    text: string,
+    currentState: PaymentState,
+    _context: RouterMessageContext,
+  ): Promise<'checkout' | 'confirm_paid' | 'status' | 'other'> {
+    if (!this.geminiService.isEnabled()) {
+      return this.detectShoppingIntentFallback(text);
+    }
+
+    try {
+      const model = this.geminiService.getModel();
+      if (!model) {
+        return this.detectShoppingIntentFallback(text);
+      }
+
+      const instruction = `Detecta la intención del usuario en el contexto de una compra.
+
+Estado actual de la orden: ${currentState}
+
+Intenciones posibles:
+- checkout: Usuario quiere generar QR, pagar ahora, proceder al checkout
+- confirm_paid: Usuario dice que ya pagó, confirma pago
+- status: Usuario pregunta el estado de su orden
+- other: Cualquier otra cosa
+
+Texto: "${text}"
+
+Responde SOLO con una palabra: checkout, confirm_paid, status, other`;
+
+      const result = await this.geminiService.generateText(instruction);
+
+      const content = result?.trim().toLowerCase() || '';
+
+      if (content.includes('checkout')) return 'checkout';
+      if (content.includes('confirm_paid')) return 'confirm_paid';
+      if (content.includes('status')) return 'status';
+
+      return 'other';
+    } catch (error) {
+      this.logger.error(
+        'Error detectando intent de shopping con Gemini:',
+        error,
+      );
+      return this.detectShoppingIntentFallback(text);
+    }
+  }
+
+  private detectShoppingIntentFallback(
+    text: string,
+  ): 'checkout' | 'confirm_paid' | 'status' | 'other' {
+    if (/(pagar|checkout|qr|cobrar|generar)/.test(text)) {
+      return 'checkout';
+    }
+    if (/(ya pague|ya pagué|listo|pagado|confirmo)/.test(text)) {
+      return 'confirm_paid';
+    }
+    if (/(estatus|estado|cómo va|como va)/.test(text)) {
+      return 'status';
+    }
+    return 'other';
+  }
+
+  private async generateGeminiResponse(
+    context: RouterMessageContext,
+    situation: string,
+    orderState: PaymentState,
+  ): Promise<string> {
+    if (!this.geminiService.isEnabled()) {
+      return this.generateFallbackResponse(situation);
+    }
+
+    try {
+      const model = this.geminiService.getModel();
+      if (!model) {
+        return this.generateFallbackResponse(situation);
+      }
+
+      const config = context.tenant.companyConfig;
+      const profile = config?.profile || {};
+      const salesPolicy = config?.sales_policy || {};
+
+      const agentName = profile.agent_name || 'asistente de ventas';
+      const tone = profile.tone || 'amigable y profesional';
+
+      const instruction = `Eres ${agentName}, especialista en ventas. Tu tono es ${tone}.
+
+Políticas de la empresa:
+${salesPolicy.delivery_cost ? `- Costo de envío: ${salesPolicy.delivery_cost}` : ''}
+${salesPolicy.refund_policy ? `- Política de devolución: ${salesPolicy.refund_policy}` : ''}
+${salesPolicy.accepted_payment_methods ? `- Métodos de pago: ${(salesPolicy.accepted_payment_methods as string[]).join(', ')}` : ''}
+
+Situación actual: ${situation}
+Estado de la orden: ${orderState}
+
+Genera una respuesta natural, breve (máximo 2 líneas) y útil en español.`;
+
+      const result = await this.geminiService.generateText(instruction);
+
+      return result || this.generateFallbackResponse(situation);
+    } catch (error) {
+      this.logger.error('Error generando respuesta con Gemini:', error);
+      return this.generateFallbackResponse(situation);
+    }
+  }
+
+  private generateFallbackResponse(situation: string): string {
+    if (situation.includes('no ha especificado un monto')) {
+      return 'Para preparar tu orden necesito el monto total. Escribe por ejemplo: *Pagar 1500 MXN*.';
+    }
+    if (situation.includes('generar el código QR')) {
+      return 'Generando tu código QR con el banco...';
+    }
+    if (situation.includes('confirma que ya realizó el pago')) {
+      return 'Perfecto, pidiéndole al banco que confirme...';
+    }
+    return 'Estoy cuidando tu carrito. Escribe *Pagar* para generar el QR.';
+  }
+
+  private translateState(state: PaymentState): string {
+    const translations: Record<PaymentState, string> = {
+      [PaymentState.CART]: 'En carrito',
+      [PaymentState.AWAITING_QR]: 'Esperando QR del banco',
+      [PaymentState.QR_SENT]: 'QR enviado, esperando pago',
+      [PaymentState.VERIFYING]: 'Verificando pago con el banco',
+      [PaymentState.COMPLETED]: 'Pago completado',
+    };
+    return translations[state] || state;
   }
 
   async handleTwoFactorReply(
@@ -218,11 +424,13 @@ export class SalesAgentService {
         await this.ordersSyncService.updateStatus(order);
         return [
           {
+            companyId: order.companyId,
             to: order.clientPhone,
             type: 'text',
             text: '¡Tu QR está listo! Escanéalo desde tu app bancaria y confirma cuando hayas pagado.',
           },
           {
+            companyId: order.companyId,
             to: order.clientPhone,
             type: 'image',
             imageBase64: payload.qr_image_base64,
@@ -240,6 +448,7 @@ export class SalesAgentService {
           await this.ordersSyncService.updateStatus(order);
           return [
             {
+              companyId: order.companyId,
               to: order.clientPhone,
               type: 'text',
               text: '✅ Pago confirmado. ¿Deseas agendar la entrega? Escribe *Agendar entrega* y lo coordinamos.',
@@ -250,6 +459,7 @@ export class SalesAgentService {
         await this.ordersSyncService.updateStatus(order);
         return [
           {
+            companyId: order.companyId,
             to: order.clientPhone,
             type: 'text',
             text: 'El banco no pudo confirmar el pago. ¿Deseas que reintente o generar un nuevo QR?',
@@ -265,6 +475,7 @@ export class SalesAgentService {
         await this.ordersSyncService.updateStatus(order);
         const actions: PaymentWebhookAction[] = [
           {
+            companyId: order.companyId,
             to: order.clientPhone,
             type: 'text',
             text: 'El banco pidió una verificación adicional. Un momento mientras validamos seguridad...',
@@ -275,6 +486,7 @@ export class SalesAgentService {
         );
         for (const phone of adminPhones) {
           actions.push({
+            companyId: order.companyId,
             to: phone,
             type: 'text',
             text: `⚠️ [${order.companyId}] El banco pide el Token de seguridad. Responde con el código numérico.`,

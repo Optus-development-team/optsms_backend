@@ -1,6 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHash,
+  randomBytes,
+} from 'crypto';
 
 interface EncryptedPayload {
   iv: string;
@@ -23,9 +28,10 @@ export class EncryptionService {
         'Sin GOOGLE_OAUTH_ENCRYPTION_KEY/ENCRYPTION_SECRET. Los tokens se guardarán en texto plano.',
       );
       this.key = null;
-    } else {
-      this.key = createHash('sha256').update(secret).digest();
+      return;
     }
+
+    this.key = this.deriveKey(secret);
   }
 
   encrypt<T extends Record<string, unknown>>(payload: T): EncryptedPayload | T {
@@ -72,5 +78,48 @@ export class EncryptionService {
       'tag' in value &&
       'value' in value
     );
+  }
+
+  private deriveKey(rawSecret: string): Buffer | null {
+    const secret = rawSecret.trim();
+    if (!secret) {
+      return null;
+    }
+
+    const base64Candidate = this.tryDecode(secret, 'base64');
+    if (base64Candidate) {
+      return base64Candidate;
+    }
+
+    const hexCandidate = this.tryDecode(secret, 'hex');
+    if (hexCandidate) {
+      return hexCandidate;
+    }
+
+    if (Buffer.byteLength(secret, 'utf8') === 32) {
+      return Buffer.from(secret, 'utf8');
+    }
+
+    this.logger.warn(
+      'GOOGLE_OAUTH_ENCRYPTION_KEY no tiene 32 bytes. Derivando clave vía SHA-256 (menos recomendable).',
+    );
+    return createHash('sha256').update(secret).digest();
+  }
+
+  private tryDecode(value: string, encoding: 'base64' | 'hex'): Buffer | null {
+    try {
+      const candidate = Buffer.from(value, encoding);
+      if (candidate.length === 32) {
+        return candidate;
+      }
+      return null;
+    } catch (error) {
+      this.logger.debug(
+        `No se pudo interpretar GOOGLE_OAUTH_ENCRYPTION_KEY como ${encoding}: ${String(
+          error,
+        )}`,
+      );
+      return null;
+    }
   }
 }

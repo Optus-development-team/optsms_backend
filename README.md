@@ -44,6 +44,12 @@ WHATSAPP_VERIFY_TOKEN=<token_para_verificacion>
 
 Opcionalmente puedes añadir `APP_SECRET` para validar firmas HMAC cuando se implemente.
 
+## Multi-tenant y remitentes
+
+- No existe lista blanca de números entrantes: cualquier remitente que escriba a tu número de WhatsApp Business se registra automáticamente como `CLIENT` en la tabla `company_users` y puede interactuar con los agentes.
+- Para designar administradores basta con insertar su número en `company_users` con rol `ADMIN`. Hasta entonces seguirán operando como clientes.
+- Las credenciales de Supabase deben usar el puerto `6543` (Supavisor) y puedes proporcionar un certificado raíz propio mediante `SUPABASE_DB_CA_FILE`, `SUPABASE_DB_CA_BASE64` o `SUPABASE_DB_CA_CERT`. Si estás en desarrollo, `SUPABASE_DB_ALLOW_SELF_SIGNED=true` evitará errores por cadenas autofirmadas.
+
 ## Ejecutar el proyecto
 
 ```bash

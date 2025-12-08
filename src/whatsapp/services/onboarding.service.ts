@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CompanyIntegrationsService } from './company-integrations.service';
 import { GoogleOauthService } from './google-oauth.service';
-import { AgentResponse, RouterMessageContext, UserRole } from '../whatsapp.types';
+import {
+  AgentResponse,
+  RouterMessageContext,
+  UserRole,
+} from '../whatsapp.types';
 
 @Injectable()
 export class OnboardingService {
@@ -34,7 +38,9 @@ export class OnboardingService {
     }
 
     if (!this.googleOauth.isEnabled()) {
-      this.logger.warn('Google OAuth no configurado, no se puede completar onboarding.');
+      this.logger.warn(
+        'Google OAuth no configurado, no se puede completar onboarding.',
+      );
       return {
         actions: [
           {
@@ -65,7 +71,7 @@ export class OnboardingService {
       actions: [
         {
           type: 'text',
-          text: '👋 Bienvenido. Antes de continuar necesito conectar tu Calendario de Google para sincronizar citas. Usa el siguiente enlace seguro:',
+          text: 'Parece que no tienes una cuenta de Google asociada. Inicia sesión para habilitar las herramientas administrativas del bot.',
         },
         {
           type: 'text',
@@ -73,7 +79,7 @@ export class OnboardingService {
         },
         {
           type: 'text',
-          text: 'Una vez completes el proceso en tu navegador regresa a WhatsApp y podremos seguir automatizando tus citas y cobros.',
+          text: 'Cuando termines el proceso en el navegador regresa a WhatsApp y repite tu solicitud de administración.',
         },
       ],
       metadata: {

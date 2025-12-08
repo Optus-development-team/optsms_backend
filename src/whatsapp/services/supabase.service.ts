@@ -1,5 +1,8 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, resolve } from 'node:path';
+import type { ConnectionOptions as TlsConnectionOptions } from 'node:tls';
 import { Pool, QueryResultRow } from 'pg';
 
 @Injectable()
@@ -22,11 +25,13 @@ export class SupabaseService implements OnModuleDestroy {
       this.configService.get<string>('SUPABASE_DB_POOL_SIZE', '5'),
     );
 
+    const connectionString = this.enforceConnectionParams(resolved.value);
+
     this.pool = new Pool({
-      connectionString: this.enforceConnectionParams(resolved.value),
+      connectionString,
       max: Number.isFinite(poolSize) ? poolSize : 5,
       idleTimeoutMillis: 10_000,
-      ssl: { rejectUnauthorized: false },
+      ssl: this.buildSslConfig(),
     });
   }
 
@@ -89,28 +94,96 @@ export class SupabaseService implements OnModuleDestroy {
     return undefined;
   }
 
-  private enforceConnectionParams(url: string): string {
-    let finalUrl = url;
+  private enforceConnectionParams(rawUrl: string): string {
+    try {
+      const url = new URL(rawUrl);
 
-    if (!/sslmode=/i.test(finalUrl)) {
-      finalUrl = this.appendParam(finalUrl, 'sslmode=require');
-    }
+      if (url.searchParams.has('sslmode')) {
+        url.searchParams.delete('sslmode');
+        this.logger.debug(
+          'Eliminando sslmode de la cadena de conexión para evitar que pg sobrescriba la configuración TLS personalizada.',
+        );
+      }
 
-    const is5432 = /:(5432)\//.test(finalUrl);
-    const hasPgBouncer = /pgbouncer=true/i.test(finalUrl);
+      if (!url.searchParams.has('pgbouncer')) {
+        url.searchParams.append('pgbouncer', 'true');
+      }
 
-    if (!is5432 && !hasPgBouncer) {
-      finalUrl = this.appendParam(finalUrl, 'pgbouncer=true');
-    } else if (is5432 && !hasPgBouncer) {
+      if (url.port === '5432') {
+        this.logger.warn(
+          'Conexión detectada en el puerto 5432 sin Supavisor. Cambia a 6543 para evitar agotar conexiones.',
+        );
+      }
+
+      return url.toString();
+    } catch (error) {
+      const safeError = error as Error;
       this.logger.warn(
-        'Conexión detectada en el puerto 5432 sin pgbouncer. Esto puede agotar conexiones cuando llegan múltiples webhooks.',
+        `No se pudo normalizar la cadena de conexión: ${safeError.message}. Usando valor original.`,
       );
+      return rawUrl;
     }
-
-    return finalUrl;
   }
 
-  private appendParam(url: string, param: string): string {
-    return url.includes('?') ? `${url}&${param}` : `${url}?${param}`;
+  private buildSslConfig(): TlsConnectionOptions {
+    const ca = this.loadCaCertificate();
+    if (ca) {
+      this.logger.log(
+        'Usando CA personalizada para las conexiones a Supabase.',
+      );
+      return {
+        ca,
+        rejectUnauthorized: true,
+      };
+    }
+
+    const allowSelfSigned = this.configService.get<string>(
+      'SUPABASE_DB_ALLOW_SELF_SIGNED',
+      'true',
+    );
+
+    if (allowSelfSigned === 'true') {
+      this.logger.warn(
+        'SUPABASE_DB_ALLOW_SELF_SIGNED=true: certificados no confiables serán aceptados (solo recomendado en desarrollo).',
+      );
+      return { rejectUnauthorized: false };
+    }
+
+    return { rejectUnauthorized: true };
+  }
+
+  private loadCaCertificate(): string | null {
+    const inlineCert = this.configService.get<string>('SUPABASE_DB_CA_CERT');
+    if (inlineCert) {
+      return inlineCert.replace(/\\n/g, '\n');
+    }
+
+    const base64Cert = this.configService.get<string>('SUPABASE_DB_CA_BASE64');
+    if (base64Cert) {
+      try {
+        return Buffer.from(base64Cert, 'base64').toString('utf8');
+      } catch (error) {
+        this.logger.warn(
+          `SUPABASE_DB_CA_BASE64 inválido: ${(error as Error).message}.`,
+        );
+      }
+    }
+
+    const caFile = this.configService.get<string>('SUPABASE_DB_CA_FILE');
+    if (!caFile) {
+      return null;
+    }
+
+    try {
+      const filePath = isAbsolute(caFile)
+        ? caFile
+        : resolve(process.cwd(), caFile);
+      return readFileSync(filePath, 'utf8');
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo leer SUPABASE_DB_CA_FILE (${caFile}): ${(error as Error).message}.`,
+      );
+      return null;
+    }
   }
 }

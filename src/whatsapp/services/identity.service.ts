@@ -8,6 +8,9 @@ interface CompanyRow {
   id: string;
   name: string;
   config: unknown;
+  whatsapp_admin_phone_ids?: string[] | null;
+  whatsapp_display_phone_number?: string | null;
+  whatsapp_phone_id?: string | null;
 }
 
 interface CompanyUserRow {
@@ -22,6 +25,7 @@ export class IdentityService {
   private readonly fallbackCompanyId?: string;
   private readonly fallbackCompanyName: string;
   private readonly fallbackCompanyConfig: Record<string, unknown>;
+  private readonly fallbackPhoneNumberId: string;
 
   constructor(
     private readonly configService: ConfigService,
@@ -36,6 +40,10 @@ export class IdentityService {
     );
     this.fallbackCompanyConfig = this.parseConfig(
       this.configService.get<string>('DEFAULT_COMPANY_CONFIG', '{}'),
+    );
+    this.fallbackPhoneNumberId = this.configService.get<string>(
+      'WHATSAPP_PHONE_NUMBER_ID',
+      '',
     );
   }
 
@@ -52,7 +60,10 @@ export class IdentityService {
     }
 
     const rows = await this.supabaseService.query<CompanyRow>(
-      'SELECT id, name, config FROM public.companies WHERE whatsapp_phone_id = $1 LIMIT 1',
+      `SELECT id, name, config, whatsapp_admin_phone_ids, whatsapp_display_phone_number, whatsapp_phone_id
+       FROM public.companies
+       WHERE whatsapp_phone_id = $1
+       LIMIT 1`,
       [phoneNumberId],
     );
 
@@ -63,24 +74,73 @@ export class IdentityService {
       return null;
     }
 
-    return {
-      companyId: rows[0].id,
-      companyName: rows[0].name,
-      companyConfig: this.parseConfig(rows[0].config),
-      phoneNumberId,
-    };
+    const tenant = this.buildTenantFromRow(rows[0], phoneNumberId);
+    if (!tenant) {
+      this.logger.error(
+        `No se pudo construir el tenant para phone_number_id=${phoneNumberId}.`,
+      );
+    }
+    return tenant;
   }
 
-  async resolveRole(companyId: string, senderId: string): Promise<UserRole> {
-    const sanitizedSender = this.cleanNumber(senderId);
+  async resolveTenantByCompanyId(
+    companyId: string,
+  ): Promise<TenantContext | null> {
+    if (!companyId) {
+      return null;
+    }
 
-    if (this.supabaseService.isEnabled()) {
+    if (!this.supabaseService.isEnabled()) {
+      if (this.fallbackCompanyId === companyId && this.fallbackPhoneNumberId) {
+        return this.buildFallbackTenant(this.fallbackPhoneNumberId);
+      }
+
+      this.logger.warn(
+        `Supabase no disponible y no existe fallback para company_id=${companyId}.`,
+      );
+      return null;
+    }
+
+    const rows = await this.supabaseService.query<CompanyRow>(
+      `SELECT id, name, config, whatsapp_admin_phone_ids, whatsapp_display_phone_number, whatsapp_phone_id
+       FROM public.companies
+       WHERE id = $1
+       LIMIT 1`,
+      [companyId],
+    );
+
+    if (!rows.length) {
+      this.logger.warn(`No se encontró compañía para id=${companyId}.`);
+      return null;
+    }
+
+    const tenant = this.buildTenantFromRow(rows[0], rows[0].whatsapp_phone_id);
+    if (!tenant) {
+      this.logger.error(
+        `No se pudo construir tenant para company_id=${companyId}.`,
+      );
+    }
+    return tenant;
+  }
+
+  async resolveRole(
+    tenant: TenantContext,
+    senderId: string,
+    waId?: string,
+  ): Promise<UserRole> {
+    const candidates = this.buildIdentityCandidates(senderId, waId);
+
+    if (this.matchesAnyAdminPhone(candidates, tenant.adminPhoneIds)) {
+      return UserRole.ADMIN;
+    }
+
+    if (this.supabaseService.isEnabled() && candidates.length) {
       const rows = await this.supabaseService.query<CompanyUserRow>(
         `SELECT role, phone FROM public.company_users
          WHERE company_id = $1
-         AND regexp_replace(phone, '\\D', '', 'g') = $2
+         AND regexp_replace(phone, '\\D', '', 'g') = ANY($2::text[])
          LIMIT 1`,
-        [companyId, sanitizedSender],
+        [tenant.companyId, candidates],
       );
 
       if (rows.length) {
@@ -92,34 +152,41 @@ export class IdentityService {
       }
     }
 
-    if (
-      this.adminPhone &&
-      this.cleanNumber(this.adminPhone) === sanitizedSender
-    ) {
-      return UserRole.ADMIN;
+    if (this.adminPhone) {
+      const fallbackAdmin = this.cleanNumber(this.adminPhone);
+      if (fallbackAdmin && candidates.includes(fallbackAdmin)) {
+        return UserRole.ADMIN;
+      }
     }
 
     return UserRole.CLIENT;
   }
 
   async getAdminPhones(companyId: string): Promise<string[]> {
-    if (!this.supabaseService.isEnabled()) {
-      return this.adminPhone ? [this.cleanNumber(this.adminPhone)] : [];
-    }
-
-    const rows = await this.supabaseService.query<CompanyUserRow>(
-      `SELECT phone FROM public.company_users
-       WHERE company_id = $1 AND role = 'ADMIN'`,
-      [companyId],
+    const adminPhones = new Set<string>(
+      await this.fetchCompanyAdminPhones(companyId),
     );
 
-    if (!rows.length && this.adminPhone) {
-      return [this.cleanNumber(this.adminPhone)];
+    if (this.supabaseService.isEnabled()) {
+      const rows = await this.supabaseService.query<CompanyUserRow>(
+        `SELECT phone FROM public.company_users
+         WHERE company_id = $1 AND role = 'ADMIN'`,
+        [companyId],
+      );
+
+      for (const row of rows) {
+        const phone = this.cleanNumber(row.phone);
+        if (phone) {
+          adminPhones.add(phone);
+        }
+      }
     }
 
-    return rows
-      .map((row) => this.cleanNumber(row.phone))
-      .filter((phone) => Boolean(phone));
+    if (!adminPhones.size && this.adminPhone) {
+      adminPhones.add(this.cleanNumber(this.adminPhone));
+    }
+
+    return Array.from(adminPhones);
   }
 
   async ensureCompanyUser(
@@ -193,6 +260,126 @@ export class IdentityService {
       companyName: this.fallbackCompanyName,
       companyConfig: this.fallbackCompanyConfig,
       phoneNumberId,
+      adminPhoneIds: this.getFallbackAdminPhones(),
+      displayPhoneNumber: null,
     };
+  }
+
+  private buildTenantFromRow(
+    row: CompanyRow,
+    explicitPhoneNumberId?: string | null,
+  ): TenantContext | null {
+    const companyConfig = this.parseConfig(row.config);
+    const adminPhoneIds = this.normalizePhoneArray(
+      row.whatsapp_admin_phone_ids,
+    );
+
+    if (!adminPhoneIds.length && this.adminPhone) {
+      adminPhoneIds.push(this.cleanNumber(this.adminPhone));
+    }
+
+    const phoneNumberId =
+      explicitPhoneNumberId ??
+      row.whatsapp_phone_id ??
+      this.fallbackPhoneNumberId;
+
+    if (!phoneNumberId) {
+      this.logger.error(
+        `La compañía ${row.id} no tiene whatsapp_phone_id configurado ni fallback.`,
+      );
+      return null;
+    }
+
+    return {
+      companyId: row.id,
+      companyName: row.name,
+      companyConfig,
+      phoneNumberId,
+      adminPhoneIds,
+      displayPhoneNumber: row.whatsapp_display_phone_number ?? null,
+    };
+  }
+
+  private normalizePhoneArray(value: unknown): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const normalized = new Set<string>();
+
+    for (const raw of value) {
+      if (typeof raw !== 'string') {
+        continue;
+      }
+
+      const phone = this.cleanNumber(raw);
+      if (phone) {
+        normalized.add(phone);
+      }
+    }
+
+    return Array.from(normalized);
+  }
+
+  private async fetchCompanyAdminPhones(companyId: string): Promise<string[]> {
+    if (!this.supabaseService.isEnabled()) {
+      return this.getFallbackAdminPhones();
+    }
+
+    const rows = await this.supabaseService.query<{
+      whatsapp_admin_phone_ids: string[] | null;
+    }>(
+      `SELECT whatsapp_admin_phone_ids
+       FROM public.companies
+       WHERE id = $1
+       LIMIT 1`,
+      [companyId],
+    );
+
+    const phones = this.normalizePhoneArray(rows[0]?.whatsapp_admin_phone_ids);
+    if (!phones.length && this.adminPhone) {
+      phones.push(this.cleanNumber(this.adminPhone));
+    }
+
+    return phones;
+  }
+
+  private getFallbackAdminPhones(): string[] {
+    return this.adminPhone ? [this.cleanNumber(this.adminPhone)] : [];
+  }
+
+  private matchesAnyAdminPhone(
+    candidates: string[],
+    adminPhones: string[],
+  ): boolean {
+    if (!candidates.length || !adminPhones.length) {
+      return false;
+    }
+
+    const adminSet = new Set(adminPhones);
+    return candidates.some((candidate) => adminSet.has(candidate));
+  }
+
+  private buildIdentityCandidates(
+    primary: string,
+    secondary?: string,
+  ): string[] {
+    const normalized = new Set<string>();
+
+    if (primary) {
+      const cleaned = this.cleanNumber(primary);
+      if (cleaned) {
+        normalized.add(cleaned);
+      }
+    }
+
+    if (secondary) {
+      const cleaned = this.cleanNumber(secondary);
+      if (cleaned) {
+        normalized.add(cleaned);
+      }
+    }
+
+    return Array.from(normalized);
   }
 }

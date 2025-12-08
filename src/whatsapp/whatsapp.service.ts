@@ -8,6 +8,7 @@ import {
   WhatsAppIncomingMessage,
   WhatsAppStatus,
   SendMessageDto,
+  WhatsAppContact,
 } from './interfaces/whatsapp.interface';
 import { AgentRouterService } from './services/agent-router.service';
 import { IdentityService } from './services/identity.service';
@@ -18,13 +19,18 @@ import type {
   TenantContext,
 } from './whatsapp.types';
 
+interface MessageContextOptions {
+  tenant?: TenantContext;
+  companyId?: string;
+  phoneNumberId?: string;
+}
+
 @Injectable()
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
-  private readonly apiUrl: string;
   private readonly apiVersion: string;
-  private readonly phoneNumberId: string;
   private readonly apiToken: string;
+  private readonly defaultPhoneNumberId: string;
 
   constructor(
     private readonly configService: ConfigService,
@@ -37,12 +43,11 @@ export class WhatsappService {
       'WHATSAPP_API_VERSION',
       'v21.0',
     );
-    this.phoneNumberId = this.configService.get<string>(
+    this.defaultPhoneNumberId = this.configService.get<string>(
       'WHATSAPP_PHONE_NUMBER_ID',
       '',
     );
     this.apiToken = this.configService.get<string>('WHATSAPP_API_TOKEN', '');
-    this.apiUrl = `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}/messages`;
   }
 
   /**
@@ -95,7 +100,11 @@ export class WhatsappService {
           // Procesar mensajes
           if (value.messages && value.messages.length > 0) {
             for (const message of value.messages) {
-              await this.handleMessage(message, tenant);
+              const contactWaId = this.resolveContactWaId(
+                value.contacts,
+                message.from,
+              );
+              await this.handleMessage(message, tenant, contactWaId);
             }
           }
 
@@ -123,6 +132,7 @@ export class WhatsappService {
   private async handleMessage(
     message: WhatsAppIncomingMessage,
     tenant: TenantContext,
+    contactWaId?: string,
   ): Promise<void> {
     this.logger.log(`Mensaje recibido de: ${message.from}`);
     this.logger.log(`Tipo de mensaje: ${message.type}`);
@@ -151,49 +161,49 @@ export class WhatsappService {
     }
 
     // Marcar el mensaje como leído
-    await this.markAsRead(message.id);
+    await this.markAsRead(message.id, tenant);
 
     switch (message.type) {
       case 'text':
         if (message.text) {
           this.logger.log(`Texto: ${message.text.body}`);
-          await this.handleTextMessage(message, tenant);
+          await this.handleTextMessage(message, tenant, contactWaId);
         }
         break;
 
       case 'image':
         this.logger.log('Imagen recibida:', message.image);
-        await this.handleMediaMessage(message, 'image');
+        await this.handleMediaMessage(message, 'image', tenant);
         break;
 
       case 'video':
         this.logger.log('Video recibido:', message.video);
-        await this.handleMediaMessage(message, 'video');
+        await this.handleMediaMessage(message, 'video', tenant);
         break;
 
       case 'audio':
         this.logger.log('Audio recibido:', message.audio);
-        await this.handleMediaMessage(message, 'audio');
+        await this.handleMediaMessage(message, 'audio', tenant);
         break;
 
       case 'document':
         this.logger.log('Documento recibido:', message.document);
-        await this.handleMediaMessage(message, 'document');
+        await this.handleMediaMessage(message, 'document', tenant);
         break;
 
       case 'location':
         this.logger.log('Ubicación recibida:', message.location);
-        await this.handleLocationMessage(message);
+        await this.handleLocationMessage(message, tenant);
         break;
 
       case 'interactive':
         this.logger.log('Interacción recibida:', message.interactive);
-        await this.handleInteractiveMessage(message);
+        await this.handleInteractiveMessage(message, tenant);
         break;
 
       case 'button':
         this.logger.log('Botón presionado');
-        await this.handleButtonMessage(message);
+        await this.handleButtonMessage(message, tenant);
         break;
 
       case 'reaction':
@@ -234,21 +244,30 @@ export class WhatsappService {
   private async handleTextMessage(
     message: WhatsAppIncomingMessage,
     tenant: TenantContext,
+    contactWaId?: string,
   ): Promise<void> {
     if (!message.text) return;
 
+    const canonicalSender = contactWaId ?? message.from;
     const role = await this.identityService.resolveRole(
-      tenant.companyId,
+      tenant,
       message.from,
+      contactWaId,
+    );
+    // Garantiza que todo remitente quede registrado como CLIENT por defecto.
+    await this.identityService.ensureCompanyUser(
+      tenant.companyId,
+      canonicalSender,
+      role,
     );
     const adkSession = await this.adkSessionService.loadSession(
       tenant,
-      message.from,
+      canonicalSender,
       role,
     );
 
     const context: RouterMessageContext = {
-      senderId: message.from,
+      senderId: canonicalSender,
       whatsappMessageId: message.id,
       originalText: message.text.body,
       message,
@@ -265,7 +284,7 @@ export class WhatsappService {
       sanitized: routerResult.sanitized,
     });
     for (const action of routerResult.actions) {
-      await this.dispatchAction(message.from, action);
+      await this.dispatchAction(canonicalSender, action, tenant);
     }
   }
 
@@ -275,6 +294,7 @@ export class WhatsappService {
   private async handleMediaMessage(
     message: WhatsAppIncomingMessage,
     mediaType: 'image' | 'video' | 'audio' | 'document',
+    tenant: TenantContext,
   ): Promise<void> {
     const media = message[mediaType];
     if (!media) return;
@@ -289,6 +309,7 @@ export class WhatsappService {
     await this.sendTextMessage(
       message.from,
       `Recibí tu ${mediaType === 'image' ? 'imagen' : mediaType === 'video' ? 'video' : mediaType === 'audio' ? 'audio' : 'documento'}. Para continuar necesito una instrucción en texto (ej. "Pagar 1250" o "Agendar cita").`,
+      { tenant },
     );
   }
 
@@ -297,6 +318,7 @@ export class WhatsappService {
    */
   private async handleLocationMessage(
     message: WhatsAppIncomingMessage,
+    tenant: TenantContext,
   ): Promise<void> {
     if (!message.location) return;
 
@@ -311,6 +333,7 @@ export class WhatsappService {
     await this.sendTextMessage(
       message.from,
       'Ubicación recibida. Confírmame en texto cómo deseas usarla y la enrutamos al agente correspondiente.',
+      { tenant },
     );
   }
 
@@ -319,6 +342,7 @@ export class WhatsappService {
    */
   private async handleInteractiveMessage(
     message: WhatsAppIncomingMessage,
+    tenant: TenantContext,
   ): Promise<void> {
     if (!message.interactive) return;
 
@@ -330,6 +354,7 @@ export class WhatsappService {
       await this.sendTextMessage(
         message.from,
         `Seleccionaste ${message.interactive.button_reply.title}. Escríbeme en texto qué operación deseas (cita, pagar, reporte o token).`,
+        { tenant },
       );
     } else if (message.interactive.list_reply) {
       this.logger.log(
@@ -339,6 +364,7 @@ export class WhatsappService {
       await this.sendTextMessage(
         message.from,
         `Seleccionaste ${message.interactive.list_reply.title}. Continúa en texto para completar la solicitud.`,
+        { tenant },
       );
     }
   }
@@ -348,6 +374,7 @@ export class WhatsappService {
    */
   private async handleButtonMessage(
     message: WhatsAppIncomingMessage,
+    tenant: TenantContext,
   ): Promise<void> {
     this.logger.log('Botón presionado en el mensaje');
     // La lógica específica depende del tipo de botón
@@ -355,6 +382,7 @@ export class WhatsappService {
     await this.sendTextMessage(
       message.from,
       'Recibí tu selección. Envíame la instrucción en texto para activarla en el orquestador.',
+      { tenant },
     );
   }
 
@@ -367,13 +395,26 @@ export class WhatsappService {
     );
   }
 
+  private resolveContactWaId(
+    contacts: WhatsAppContact[] | undefined,
+    messageFrom: string,
+  ): string | undefined {
+    if (!contacts?.length) {
+      return undefined;
+    }
+
+    const match = contacts.find((contact) => contact.wa_id === messageFrom);
+    return match?.wa_id ?? contacts[0]?.wa_id;
+  }
+
   private async dispatchAction(
     recipient: string,
     action: RouterAction,
+    tenant: TenantContext,
   ): Promise<void> {
     switch (action.type) {
       case 'text':
-        await this.sendTextMessage(recipient, action.text);
+        await this.sendTextMessage(recipient, action.text, { tenant });
         break;
       default: {
         const unsupportedType = action.type as string;
@@ -386,7 +427,11 @@ export class WhatsappService {
   /**
    * Envía un mensaje de texto
    */
-  async sendTextMessage(to: string, text: string): Promise<any> {
+  async sendTextMessage(
+    to: string,
+    text: string,
+    options?: MessageContextOptions,
+  ): Promise<any> {
     const messageData: SendMessageDto = {
       to,
       type: 'text',
@@ -396,7 +441,7 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, options);
   }
 
   /**
@@ -406,6 +451,7 @@ export class WhatsappService {
     to: string,
     imageUrl: string,
     caption?: string,
+    options?: MessageContextOptions,
   ): Promise<any> {
     const messageData: SendMessageDto = {
       to,
@@ -416,7 +462,7 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, options);
   }
 
   async sendImageFromBase64(
@@ -424,12 +470,15 @@ export class WhatsappService {
     base64: string,
     mimeType: string = 'image/png',
     caption?: string,
+    options?: MessageContextOptions,
   ): Promise<any> {
+    const { phoneNumberId } = await this.resolvePhoneNumberId(options);
     const buffer = Buffer.from(base64, 'base64');
     const mediaId = await this.uploadMedia(
       buffer,
       mimeType,
       `qr-${Date.now()}.png`,
+      phoneNumberId,
     );
 
     const messageData: SendMessageDto = {
@@ -441,7 +490,10 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, {
+      ...options,
+      phoneNumberId,
+    });
   }
 
   /**
@@ -451,6 +503,7 @@ export class WhatsappService {
     to: string,
     videoUrl: string,
     caption?: string,
+    options?: MessageContextOptions,
   ): Promise<any> {
     const messageData: SendMessageDto = {
       to,
@@ -461,7 +514,7 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, options);
   }
 
   /**
@@ -472,6 +525,7 @@ export class WhatsappService {
     documentUrl: string,
     filename: string,
     caption?: string,
+    options?: MessageContextOptions,
   ): Promise<any> {
     const messageData: SendMessageDto = {
       to,
@@ -483,7 +537,7 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, options);
   }
 
   /**
@@ -494,6 +548,7 @@ export class WhatsappService {
     templateName: string,
     languageCode: string = 'es',
     components?: any[],
+    options?: MessageContextOptions,
   ): Promise<any> {
     const messageData: SendMessageDto = {
       to,
@@ -507,14 +562,18 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData);
+    return this.sendMessage(messageData, options);
   }
 
   /**
    * Método genérico para enviar mensajes
    */
-  private async sendMessage(messageData: SendMessageDto): Promise<any> {
+  private async sendMessage(
+    messageData: SendMessageDto,
+    options?: MessageContextOptions,
+  ): Promise<any> {
     try {
+      const { phoneNumberId } = await this.resolvePhoneNumberId(options);
       const payload = {
         messaging_product: 'whatsapp',
         recipient_type: 'individual',
@@ -522,12 +581,16 @@ export class WhatsappService {
       };
 
       const response = await firstValueFrom(
-        this.httpService.post(this.apiUrl, payload, {
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.apiToken}`,
+        this.httpService.post(
+          this.getMessagesEndpoint(phoneNumberId),
+          payload,
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${this.apiToken}`,
+            },
           },
-        }),
+        ),
       );
 
       this.logger.log(`Mensaje enviado correctamente a ${messageData.to}`);
@@ -544,6 +607,7 @@ export class WhatsappService {
     buffer: Buffer,
     mimeType: string,
     filename: string,
+    phoneNumberId: string,
   ): Promise<string> {
     try {
       const form = new FormData();
@@ -554,16 +618,12 @@ export class WhatsappService {
       });
 
       const response = await firstValueFrom(
-        this.httpService.post(
-          `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}/media`,
-          form,
-          {
-            headers: {
-              Authorization: `Bearer ${this.apiToken}`,
-              ...form.getHeaders(),
-            },
+        this.httpService.post(this.getMediaEndpoint(phoneNumberId), form, {
+          headers: {
+            Authorization: `Bearer ${this.apiToken}`,
+            ...form.getHeaders(),
           },
-        ),
+        }),
       );
 
       const mediaId = (response.data as { id?: string }).id;
@@ -580,14 +640,63 @@ export class WhatsappService {
     }
   }
 
+  private getMessagesEndpoint(phoneNumberId: string): string {
+    return `https://graph.facebook.com/${this.apiVersion}/${phoneNumberId}/messages`;
+  }
+
+  private getMediaEndpoint(phoneNumberId: string): string {
+    return `https://graph.facebook.com/${this.apiVersion}/${phoneNumberId}/media`;
+  }
+
+  private async resolvePhoneNumberId(
+    options?: MessageContextOptions,
+  ): Promise<{ phoneNumberId: string; tenant?: TenantContext }> {
+    if (options?.tenant?.phoneNumberId) {
+      return {
+        phoneNumberId: options.tenant.phoneNumberId,
+        tenant: options.tenant,
+      };
+    }
+
+    if (options?.phoneNumberId) {
+      return {
+        phoneNumberId: options.phoneNumberId,
+        tenant: options.tenant,
+      };
+    }
+
+    if (options?.companyId) {
+      const tenant = await this.identityService.resolveTenantByCompanyId(
+        options.companyId,
+      );
+      if (tenant?.phoneNumberId) {
+        return {
+          phoneNumberId: tenant.phoneNumberId,
+          tenant,
+        };
+      }
+    }
+
+    if (this.defaultPhoneNumberId) {
+      return { phoneNumberId: this.defaultPhoneNumberId };
+    }
+
+    throw new Error(
+      'No se pudo determinar el phone_number_id para enviar el mensaje.',
+    );
+  }
+
   /**
    * Marca un mensaje como leído
    */
-  private async markAsRead(messageId: string): Promise<void> {
+  private async markAsRead(
+    messageId: string,
+    tenant: TenantContext,
+  ): Promise<void> {
     try {
       await firstValueFrom(
         this.httpService.post(
-          this.apiUrl,
+          this.getMessagesEndpoint(tenant.phoneNumberId),
           {
             messaging_product: 'whatsapp',
             status: 'read',

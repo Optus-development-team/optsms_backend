@@ -42,12 +42,13 @@ export class PaymentWarmupService implements OnModuleInit {
 
     for (const company of companies) {
       try {
-        const result = await this.paymentClient.warmupBankSession(
-          company.id,
-        );
+        const result = await this.paymentClient.warmupBankSession(company.id);
 
         if (result.requiresTwoFactor) {
-          await this.companyIntegrations.markTwoFactorAttention(company.id, true);
+          await this.companyIntegrations.markTwoFactorAttention(
+            company.id,
+            true,
+          );
           await this.notifyAdmins(company.id);
         }
       } catch (error) {
@@ -65,6 +66,7 @@ export class PaymentWarmupService implements OnModuleInit {
       await this.whatsappService.sendTextMessage(
         admin,
         '⚠️ El banco solicitó un código 2FA para continuar con la automatización de pagos. Responde con el token cuando lo tengas.',
+        { companyId },
       );
     }
   }
