@@ -80,7 +80,9 @@ export class PaymentProxyController {
         }
       }
 
-      headers['X-PAYMENT'] = headerToForward;
+      if (headerToForward) {
+        headers['X-PAYMENT'] = headerToForward;
+      }
     }
 
     this.logger.log(`🎯 Target URL: ${targetUrl}`);
