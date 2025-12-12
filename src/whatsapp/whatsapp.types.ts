@@ -69,10 +69,17 @@ export interface RouterMessageContext {
   referredProduct?: ReferredProduct;
 }
 
-export type RouterAction = {
-  type: 'text';
-  text: string;
-};
+export type RouterAction =
+  | {
+      type: 'text';
+      text: string;
+    }
+  | {
+      type: 'image';
+      base64: string;
+      caption?: string;
+      mimeType?: string;
+    };
 
 export interface AgentResponse {
   actions: RouterAction[];
@@ -112,6 +119,12 @@ export interface X402SettlementData {
   errorReason?: string | null;
 }
 
+export interface ChatHistoryItem {
+  role: 'user' | 'model';
+  text: string;
+  timestamp: Date;
+}
+
 export interface PaymentOrder {
   orderId: string;
   clientPhone: string;
@@ -135,6 +148,8 @@ export interface PaymentOrder {
   referredProductId?: string;
   /** catalog_id referenciado desde WhatsApp */
   referredCatalogId?: string;
+  /** Historial de chat para contexto de Gemini */
+  chatHistory?: ChatHistoryItem[];
 }
 
 export enum SalesToolType {

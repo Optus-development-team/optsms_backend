@@ -42,6 +42,7 @@ async function bootstrap() {
     origin: '*',
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
+    exposedHeaders: ['X-PAYMENT-RESPONSE'],
   });
 
   const swaggerConfig = new DocumentBuilder()

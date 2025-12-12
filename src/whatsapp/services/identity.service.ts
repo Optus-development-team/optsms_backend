@@ -195,10 +195,13 @@ export class IdentityService {
     role: UserRole,
   ): Promise<string | null> {
     if (!this.supabaseService.isEnabled()) {
+      this.logger.warn('Supabase no habilitado, no se puede registrar usuario');
       return null;
     }
 
     const phone = this.cleanNumber(rawPhone);
+    this.logger.debug(`Verificando usuario ${phone} para company ${companyId}`);
+    
     const existing = await this.supabaseService.query<{ id: string }>(
       `SELECT id FROM public.company_users
        WHERE company_id = $1
@@ -208,10 +211,13 @@ export class IdentityService {
     );
 
     if (existing[0]?.id) {
+      this.logger.log(`Usuario existente encontrado: ${existing[0].id} (${phone})`);
       return existing[0].id;
     }
 
     const dbRole = role === UserRole.ADMIN ? 'ADMIN' : 'CLIENT';
+    this.logger.log(`Creando nuevo usuario ${phone} con rol ${dbRole}`);
+    
     const rows = await this.supabaseService.query<{ id: string }>(
       `INSERT INTO public.company_users (company_id, phone, role)
        VALUES ($1, $2, $3::user_role)
@@ -220,7 +226,14 @@ export class IdentityService {
       [companyId, phone, dbRole],
     );
 
-    return rows[0]?.id ?? null;
+    const userId = rows[0]?.id ?? null;
+    if (userId) {
+      this.logger.log(`Usuario creado exitosamente: ${userId} (${phone})`);
+    } else {
+      this.logger.error(`No se pudo crear usuario para ${phone}`);
+    }
+    
+    return userId;
   }
 
   private cleanNumber(phone: string): string {

@@ -37,8 +37,20 @@ export class OrdersSyncService {
   constructor(private readonly supabase: SupabaseService) {}
 
   async syncDraft(order: PaymentOrder): Promise<string | undefined> {
-    if (!this.supabase.isEnabled() || !order.userId || !order.amount) {
+    if (!this.supabase.isEnabled()) {
+      this.logger.warn('Supabase no habilitado, no se puede guardar orden');
       return order.supabaseOrderId;
+    }
+    
+    if (!order.amount) {
+      this.logger.warn('Orden sin monto, no se puede guardar');
+      return order.supabaseOrderId;
+    }
+
+    if (!order.userId) {
+      this.logger.warn(
+        `Orden ${order.orderId} sin userId. Se intentará guardar con cliente pendiente.`,
+      );
     }
 
     const state = this.mapState(order.state);
@@ -52,11 +64,15 @@ export class OrdersSyncService {
       referred_catalog_id: order.referredCatalogId,
     };
 
+    this.logger.debug(
+      `Guardando orden: company=${order.companyId}, user=${order.userId}, amount=${order.amount}`,
+    );
+
     const rows = await this.supabase.query<OrderRow>(
       `INSERT INTO public.orders (company_id, user_id, total_amount, status, details, metadata)
        VALUES ($1, $2, $3, $4::order_status, $5, $6::jsonb)
        ON CONFLICT (company_id, details)
-       DO UPDATE SET total_amount = EXCLUDED.total_amount, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = now()
+       DO UPDATE SET total_amount = EXCLUDED.total_amount, status = EXCLUDED.status, metadata = EXCLUDED.metadata, user_id = COALESCE(EXCLUDED.user_id, orders.user_id), updated_at = now()
        RETURNING id`,
       [
         order.companyId,
@@ -70,10 +86,11 @@ export class OrdersSyncService {
 
     const dbId = rows[0]?.id;
     if (!dbId) {
-      this.logger.warn('No se pudo guardar la orden en Supabase');
+      this.logger.error('No se pudo guardar la orden en Supabase');
       return order.supabaseOrderId;
     }
 
+    this.logger.log(`Orden guardada exitosamente en Supabase: ${dbId}`);
     return dbId;
   }
 

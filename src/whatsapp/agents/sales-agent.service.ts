@@ -10,6 +10,7 @@ import type {
   SalesToolResult,
   X402NegotiationData,
   X402SettlementData,
+  ChatHistoryItem,
 } from '../whatsapp.types';
 import { PaymentState, UserRole } from '../whatsapp.types';
 import { PaymentClientService } from '../services/payment-client.service';
@@ -45,18 +46,7 @@ export class SalesAgentService {
     context: RouterMessageContext,
     sanitized: SanitizedTextResult,
   ): Promise<AgentResponse> {
-    // Si hay un producto referenciado, obtener su información del catálogo
-    if (context.referredProduct) {
-      return this.handleReferredProduct(context, sanitized);
-    }
-
-    // Primero, intentar detectar y ejecutar herramientas del catálogo
-    const toolResponse = await this.detectAndExecuteTool(context, sanitized);
-    if (toolResponse) {
-      return toolResponse;
-    }
-
-    // Si no se ejecutó ninguna herramienta, continuar con el flujo de pago normal
+    // Recuperar orden y actualizar historial primero
     const clientKey = this.buildClientKey(
       context.tenant.companyId,
       context.senderId,
@@ -71,6 +61,29 @@ export class SalesAgentService {
     if (order.companyId !== context.tenant.companyId) {
       order = this.createOrder(context.tenant.companyId, context.senderId);
       this.ordersByClient.set(clientKey, order);
+    }
+
+    // Asegurar historial
+    if (!order.chatHistory) {
+      order.chatHistory = [];
+    }
+
+    // Agregar mensaje del usuario al historial
+    order.chatHistory.push({
+      role: 'user',
+      text: sanitized.normalizedText,
+      timestamp: new Date(),
+    });
+
+    // Si hay un producto referenciado, obtener su información del catálogo
+    if (context.referredProduct) {
+      return this.handleReferredProduct(context, sanitized, order);
+    }
+
+    // Primero, intentar detectar y ejecutar herramientas del catálogo
+    const toolResponse = await this.detectAndExecuteTool(context, sanitized);
+    if (toolResponse) {
+      return toolResponse;
     }
 
     this.logger.debug(`Estado actual ${order.state} para ${context.senderId}`);
@@ -95,6 +108,7 @@ export class SalesAgentService {
       sanitized.normalizedText,
       order.state,
       context,
+      order.chatHistory,
     );
 
     const actions: RouterAction[] = [];
@@ -104,79 +118,22 @@ export class SalesAgentService {
         context,
         'El usuario no ha especificado un monto. Pídele amablemente que indique el monto total a pagar.',
         order.state,
+        order.chatHistory,
       );
       actions.push({
         type: 'text',
         text: response,
+      });
+      order.chatHistory.push({
+        role: 'model',
+        text: response,
+        timestamp: new Date(),
       });
       return { actions };
     }
 
     if (intent === 'checkout' && order.state === PaymentState.CART) {
-      const response = await this.generateGeminiResponse(
-        context,
-        'El usuario quiere generar el código QR para pagar. Confirma que estás procesando su solicitud.',
-        order.state,
-      );
-      actions.push({
-        type: 'text',
-        text: response,
-      });
-
-      // Usar nuevo flujo x402 para iniciar el pago
-      const x402Result = await this.x402PaymentClient.initiatePayment({
-        orderId: order.orderId,
-        amountUsd: order.amount,
-        description: order.details,
-        resource: 'Orden de compra',
-        fiatAmount: order.amount,
-        currency: 'BOB',
-        symbol: 'Bs.',
-      });
-
-      if (!x402Result.ok || !x402Result.negotiation) {
-        this.logger.error(
-          `Error iniciando pago x402: ${x402Result.error}`,
-        );
-        actions.push({
-          type: 'text',
-          text: 'Hubo un problema generando el QR. Por favor intenta nuevamente.',
-        });
-        return { actions };
-      }
-
-      // Guardar datos de x402 en la orden
-      order.x402JobId = x402Result.jobId;
-      order.paymentUrl = x402Result.paymentUrl;
-      order.x402Negotiation = x402Result.negotiation as X402NegotiationData;
-      order.state = PaymentState.AWAITING_QR;
-      order.lastUpdate = new Date();
-
-      // Sincronizar con Supabase incluyendo metadata de x402
-      await this.ordersSyncService.updateStatus(order);
-
-      // Si tenemos QR, lo mandamos con mensaje interactivo CTA URL
-      if (x402Result.qrImageBase64) {
-        return {
-          actions,
-          metadata: {
-            sendInteractiveCtaUrl: true,
-            to: context.senderId,
-            qrBase64: x402Result.qrImageBase64,
-            bodyText: `💰 *Total a pagar:* Bs. ${order.amount?.toFixed(2)}\n\n📱 Escanea el QR con tu app bancaria o presiona el botón para completar el pago.`,
-            footerText: `Ref: ${order.details}`,
-            buttonDisplayText: '💳 Pagar ahora',
-            buttonUrl: x402Result.paymentUrl!,
-          },
-        };
-      }
-
-      // Si no hay QR (solo crypto disponible), enviar solo el link
-      actions.push({
-        type: 'text',
-        text: `Tu orden está lista. Puedes completar el pago aquí: ${x402Result.paymentUrl}`,
-      });
-      return { actions };
+      return this.processCheckout(context, order);
     }
 
     if (intent === 'confirm_paid' && order.state === PaymentState.QR_SENT) {
@@ -184,10 +141,16 @@ export class SalesAgentService {
         context,
         'El usuario confirma que ya realizó el pago. Indica que estás verificando con el banco.',
         order.state,
+        order.chatHistory,
       );
       actions.push({
         type: 'text',
         text: response,
+      });
+      order.chatHistory.push({
+        role: 'model',
+        text: response,
+        timestamp: new Date(),
       });
 
       order.state = PaymentState.VERIFYING;
@@ -210,18 +173,32 @@ export class SalesAgentService {
         );
         await this.ordersSyncService.updateStatus(order);
 
+        const successMsg =
+          '✅ ¡Pago confirmado! Gracias por tu compra. ¿Deseas agendar la entrega? Escribe *Agendar entrega* y lo coordinamos.';
         actions.push({
           type: 'text',
-          text: '✅ ¡Pago confirmado! Gracias por tu compra. ¿Deseas agendar la entrega? Escribe *Agendar entrega* y lo coordinamos.',
+          text: successMsg,
+        });
+        order.chatHistory.push({
+          role: 'model',
+          text: successMsg,
+          timestamp: new Date(),
         });
         return { actions };
       }
 
       // Pago no confirmado aún - mantener en verificación
       await this.ordersSyncService.updateStatus(order);
+      const waitMsg =
+        'Verificando con el banco... esto puede tardar hasta 60 segundos. Te avisaré cuando se confirme.';
       actions.push({
         type: 'text',
-        text: 'Verificando con el banco... esto puede tardar hasta 60 segundos. Te avisaré cuando se confirme.',
+        text: waitMsg,
+      });
+      order.chatHistory.push({
+        role: 'model',
+        text: waitMsg,
+        timestamp: new Date(),
       });
       return { actions };
     }
@@ -232,10 +209,16 @@ export class SalesAgentService {
         context,
         `El usuario consulta el estado. La orden ${order.orderId} está en estado: ${stateText}`,
         order.state,
+        order.chatHistory,
       );
       actions.push({
         type: 'text',
         text: response,
+      });
+      order.chatHistory.push({
+        role: 'model',
+        text: response,
+        timestamp: new Date(),
       });
       return { actions };
     }
@@ -245,7 +228,14 @@ export class SalesAgentService {
       context,
       `El usuario escribió algo relacionado con compras pero no detectamos una acción clara. Estado actual: ${order.state}. Sugiere opciones amablemente.`,
       order.state,
+      order.chatHistory,
     );
+
+    order.chatHistory.push({
+      role: 'model',
+      text: defaultResponse,
+      timestamp: new Date(),
+    });
 
     return {
       actions: [
@@ -265,6 +255,7 @@ export class SalesAgentService {
   private async handleReferredProduct(
     context: RouterMessageContext,
     sanitized: SanitizedTextResult,
+    order: PaymentOrder,
   ): Promise<AgentResponse> {
     const { referredProduct } = context;
     if (!referredProduct) {
@@ -304,33 +295,78 @@ export class SalesAgentService {
 
     const product = productInfo.data[0];
 
-    // Crear o recuperar la orden del cliente
-    const clientKey = this.buildClientKey(
-      context.tenant.companyId,
-      context.senderId,
+    this.logger.debug(
+      `Producto obtenido del catálogo: ${JSON.stringify(product)}`,
     );
-    let order = this.ordersByClient.get(clientKey);
 
-    if (!order || order.state === PaymentState.COMPLETED) {
-      order = this.createOrder(context.tenant.companyId, context.senderId);
-      this.ordersByClient.set(clientKey, order);
+    // Inicializar historial si no existe
+    if (!order.chatHistory) {
+      order.chatHistory = [];
     }
 
-    // Guardar referencia del producto en la orden
+    // Agregar mensaje del usuario al historial
+    order.chatHistory.push({
+      role: 'user',
+      text: sanitized.normalizedText,
+      timestamp: new Date(),
+    });
+
+    // Guardar referencia del producto en la orden y resetear estado
     order.referredProductId = referredProduct.productRetailerId;
     order.referredCatalogId = referredProduct.catalogId;
+    order.state = PaymentState.CART;
+    order.details = `Compra de ${product.name}`;
 
-    // Extraer precio del producto (formato: "150.00 BOB")
-    const priceMatch = product.price?.match(/^([\d.]+)/);
-    if (priceMatch) {
-      order.amount = parseFloat(priceMatch[1]);
+    // Extraer precio del producto (formato: "Bs.400,00", "150.00 BOB", "$150", etc.)
+    let extractedPrice: number | undefined;
+    if (product.price) {
+      // Eliminar símbolos de moneda y espacios, luego extraer números
+      const cleanPrice = product.price.replace(/[^\d,.]/g, '').trim();
+      const priceMatch = cleanPrice.match(/([\d,]+(?:\.[\d]+)?|[\d]+(?:,[\d]+)?)/);
+      if (priceMatch) {
+        // Si usa coma como separador decimal (ej: 400,00), convertir a punto
+        let priceStr = priceMatch[1];
+        // Si tiene formato 1.234,56 o 1,234.56, determinar cuál es el separador decimal
+        const hasCommaDecimal = priceStr.includes(',') && priceStr.lastIndexOf(',') > priceStr.lastIndexOf('.');
+        if (hasCommaDecimal) {
+          // Formato europeo: 1.234,56 -> eliminar puntos, reemplazar coma por punto
+          priceStr = priceStr.replace(/\./g, '').replace(',', '.');
+        } else {
+          // Formato americano: 1,234.56 -> solo eliminar comas
+          priceStr = priceStr.replace(/,/g, '');
+        }
+        extractedPrice = parseFloat(priceStr);
+      }
+    }
+    this.logger.debug(
+      `Precio del producto: ${product.price}, extraído: ${extractedPrice}`,
+    );
+
+    if (extractedPrice && extractedPrice > 0) {
+      order.amount = extractedPrice;
     }
 
     order.lastUpdate = new Date();
     await this.ensureOrderUser(order, context.role);
     order.supabaseOrderId = await this.ordersSyncService.syncDraft(order);
 
-    // Generar respuesta con información del producto usando Gemini
+    // Detectar si el usuario quiere comprar directamente
+    const userText = sanitized.normalizedText.toLowerCase();
+    const wantsToPayNow =
+      /(comprar|pagar|link de pago|generar|qr|checkout|quiero este|lo quiero|me lo llevo)/i.test(
+        userText,
+      );
+
+    this.logger.debug(
+      `Producto referenciado - wantsToPayNow: ${wantsToPayNow}, amount: ${order.amount}`,
+    );
+
+    // Si el usuario quiere pagar y tenemos precio, generar QR/link directamente
+    if (wantsToPayNow && order.amount) {
+      return this.processCheckout(context, order);
+    }
+
+    // Si no quiere pagar aún o no hay precio, mostrar info y preguntar
     const productDescription = `
 Producto: ${product.name}
 Precio: ${product.price}
@@ -342,7 +378,14 @@ ${product.description ? `Descripción: ${product.description}` : ''}
       context,
       `El usuario pregunta por el producto "${product.name}". Información: ${productDescription}. Pregunta del usuario: "${sanitized.normalizedText}". Responde amablemente con la información del producto y pregunta si desea comprarlo.`,
       order.state,
+      order.chatHistory,
     );
+
+    order.chatHistory!.push({
+      role: 'model',
+      text: response,
+      timestamp: new Date(),
+    });
 
     return {
       actions: [
@@ -351,6 +394,127 @@ ${product.description ? `Descripción: ${product.description}` : ''}
           text: response,
         },
       ],
+    };
+  }
+
+  /**
+   * Procesa el checkout: genera QR/link de pago y lo envía al usuario.
+   */
+  private async processCheckout(
+    context: RouterMessageContext,
+    order: PaymentOrder,
+  ): Promise<AgentResponse> {
+    const actions: RouterAction[] = [];
+
+    // Validar que tengamos un monto antes de proceder
+    if (!order.amount || order.amount <= 0) {
+      this.logger.warn(
+        `processCheckout llamado sin monto válido para orden ${order.orderId}`,
+      );
+      const errorMsg =
+        'Para generar el pago necesito el monto total. ¿Cuánto es el total a pagar?';
+      actions.push({ type: 'text', text: errorMsg });
+      order.chatHistory?.push({
+        role: 'model',
+        text: errorMsg,
+        timestamp: new Date(),
+      });
+      return { actions };
+    }
+
+    this.logger.log(
+      `Procesando checkout para orden ${order.orderId}, monto: ${order.amount}`,
+    );
+
+    // Asegurar que tenemos el ID de Supabase antes de generar el pago
+    if (!order.supabaseOrderId) {
+      order.supabaseOrderId = await this.ordersSyncService.syncDraft(order);
+    }
+
+    // Usar nuevo flujo x402 para iniciar el pago con el ID de Supabase
+    const x402Result = await this.x402PaymentClient.initiatePayment({
+      orderId: order.supabaseOrderId || order.orderId,
+      amountUsd: order.amount,
+      description: order.details,
+      resource: 'Orden de compra',
+      fiatAmount: order.amount,
+      currency: 'BOB',
+      symbol: 'Bs.',
+    });
+
+    if (!x402Result.ok || !x402Result.negotiation) {
+      this.logger.error(`Error iniciando pago x402: ${x402Result.error}`);
+      const errorMsg =
+        'Hubo un problema generando el QR. Por favor intenta nuevamente.';
+      actions.push({
+        type: 'text',
+        text: errorMsg,
+      });
+      order.chatHistory?.push({
+        role: 'model',
+        text: errorMsg,
+        timestamp: new Date(),
+      });
+      return { actions };
+    }
+
+    // Guardar datos de x402 en la orden
+    order.x402JobId = x402Result.jobId;
+    order.paymentUrl = x402Result.paymentUrl;
+    order.x402Negotiation = x402Result.negotiation as X402NegotiationData;
+    order.state = PaymentState.QR_SENT;
+    order.lastUpdate = new Date();
+
+    // Sincronizar con Supabase incluyendo metadata de x402
+    await this.ordersSyncService.updateStatus(order);
+
+    // Log para debug
+    this.logger.debug(`QR recibido del x402: ${!!x402Result.qrImageBase64}, longitud: ${x402Result.qrImageBase64?.length || 0}`);
+
+    // Enviar QR+link usando SOLO mensaje interactivo CTA URL con imagen en header
+    if (x402Result.qrImageBase64) {
+      const bodyText = `🛒 *${order.details}*\n💰 *Total a pagar:* Bs. ${order.amount?.toFixed(2)}\n\n📱 Escanea el código QR o presiona el botón para completar tu pago de forma segura.`;
+      
+      order.chatHistory?.push({
+        role: 'model',
+        text: bodyText,
+        timestamp: new Date(),
+      });
+
+      // Enviar SOLO mensaje interactivo con QR en header y botón CTA
+      return {
+        actions: [],
+        metadata: {
+          sendInteractiveCtaUrlWithQr: true,
+          to: context.senderId,
+          qrBase64: x402Result.qrImageBase64,
+          bodyText,
+          footerText: `Ref: ${order.details}`,
+          buttonDisplayText: '💳 Completar Pago',
+          buttonUrl: x402Result.paymentUrl!,
+        },
+      };
+    }
+
+    // Si no hay QR (solo crypto disponible), enviar mensaje CTA con header de texto
+    const bodyText = `🛒 *${order.details}*\n💰 Total: Bs. ${order.amount?.toFixed(2)}\n\n✅ Tu orden está lista. Presiona el botón para completar el pago.`;
+    
+    order.chatHistory?.push({
+      role: 'model',
+      text: bodyText,
+      timestamp: new Date(),
+    });
+    
+    return {
+      actions: [],
+      metadata: {
+        sendInteractiveCtaUrl: true,
+        to: context.senderId,
+        bodyText,
+        footerText: `Ref: ${order.details}`,
+        buttonDisplayText: '💳 Completar Pago',
+        buttonUrl: x402Result.paymentUrl!,
+      },
     };
   }
 
@@ -399,34 +563,64 @@ Responde SOLO con el número (sin símbolos de moneda) o "null" si no hay monto.
     text: string,
     currentState: PaymentState,
     _context: RouterMessageContext,
+    history: ChatHistoryItem[] = [],
   ): Promise<'checkout' | 'confirm_paid' | 'status' | 'other'> {
+    // Fallback rápido para confirmaciones simples cuando hay producto en carrito
+    const normalizedText = text.toLowerCase().trim();
+    // Permitir variaciones como "siiii", "okkkk", etc.
+    const isSimpleConfirmation = /^(si+|sí+|ok+|dale|va|yes+|claro|bueno|listo|confirmo|si+\s*pe|sip+|simón|yep+)$/i.test(
+      normalizedText,
+    );
+
+    // Si es confirmación simple y hay un producto en el carrito con precio, es checkout
+    if (isSimpleConfirmation && currentState === PaymentState.CART) {
+      this.logger.debug(
+        `Detectada confirmación simple "${text}" con estado CART -> checkout`,
+      );
+      return 'checkout';
+    }
+
     if (!this.geminiService.isEnabled()) {
-      return this.detectShoppingIntentFallback(text);
+      return this.detectShoppingIntentFallback(text, currentState);
     }
 
     try {
       const model = this.geminiService.getModel();
       if (!model) {
-        return this.detectShoppingIntentFallback(text);
+        return this.detectShoppingIntentFallback(text, currentState);
       }
 
-      const instruction = `Detecta la intención del usuario en el contexto de una compra.
+      // Construir contexto del historial para Gemini
+      const historyContext =
+        history.length > 0
+          ? history
+              .slice(-6) // últimos 6 mensajes para contexto
+              .map((h) => `${h.role === 'user' ? 'Usuario' : 'Asistente'}: ${h.text}`)
+              .join('\n')
+          : 'Sin historial previo';
+
+      const instruction = `Analiza el historial de conversación y el último mensaje para detectar la intención del usuario.
 
 Estado actual de la orden: ${currentState}
+Historial reciente:
+${historyContext}
+
+Último mensaje del usuario: "${text}"
 
 Intenciones posibles:
-- checkout: Usuario quiere generar QR, pagar ahora, proceder al checkout
-- confirm_paid: Usuario dice que ya pagó, confirma pago
-- status: Usuario pregunta el estado de su orden
-- other: Cualquier otra cosa
+- checkout: Usuario quiere comprar, pagar, generar QR/link de pago, o confirma una intención de compra previa (ej: "si", "ok", "dale", "si pe", "quiero", "comprar", "pagar").
+- confirm_paid: Usuario dice que ya pagó o realizó la transferencia.
+- status: Usuario pregunta el estado de su orden o pago.
+- other: Cualquier otra cosa.
 
-Texto: "${text}"
+IMPORTANTE: Si el usuario respondió con una confirmación simple como "si", "ok", "dale" después de que el asistente le preguntó si desea comprar, la intención es "checkout".
 
 Responde SOLO con una palabra: checkout, confirm_paid, status, other`;
 
       const result = await this.geminiService.generateText(instruction);
 
       const content = result?.trim().toLowerCase() || '';
+      this.logger.debug(`Gemini intent detection result: ${content}`);
 
       if (content.includes('checkout')) return 'checkout';
       if (content.includes('confirm_paid')) return 'confirm_paid';
@@ -438,20 +632,31 @@ Responde SOLO con una palabra: checkout, confirm_paid, status, other`;
         'Error detectando intent de shopping con Gemini:',
         error,
       );
-      return this.detectShoppingIntentFallback(text);
+      return this.detectShoppingIntentFallback(text, currentState);
     }
   }
 
   private detectShoppingIntentFallback(
     text: string,
+    currentState?: PaymentState,
   ): 'checkout' | 'confirm_paid' | 'status' | 'other' {
-    if (/(pagar|checkout|qr|cobrar|generar)/.test(text)) {
+    const normalizedText = text.toLowerCase().trim();
+
+    // Confirmaciones simples cuando hay carrito (permitir variaciones como "siiii")
+    if (
+      currentState === PaymentState.CART &&
+      /^(si+|sí+|ok+|dale|va|yes+|claro|bueno|listo|confirmo|si+\s*pe|sip+)$/i.test(normalizedText)
+    ) {
       return 'checkout';
     }
-    if (/(ya pague|ya pagué|listo|pagado|confirmo)/.test(text)) {
+
+    if (/(pagar|checkout|qr|cobrar|generar|comprar|link de pago)/.test(normalizedText)) {
+      return 'checkout';
+    }
+    if (/(ya pague|ya pagué|listo|pagado|confirmo|transferí|transferi)/.test(normalizedText)) {
       return 'confirm_paid';
     }
-    if (/(estatus|estado|cómo va|como va)/.test(text)) {
+    if (/(estatus|estado|cómo va|como va)/.test(normalizedText)) {
       return 'status';
     }
     return 'other';
@@ -461,6 +666,7 @@ Responde SOLO con una palabra: checkout, confirm_paid, status, other`;
     context: RouterMessageContext,
     situation: string,
     orderState: PaymentState,
+    history: ChatHistoryItem[] = [],
   ): Promise<string> {
     if (!this.geminiService.isEnabled()) {
       return this.generateFallbackResponse(situation);
@@ -489,9 +695,19 @@ ${salesPolicy.accepted_payment_methods ? `- Métodos de pago: ${(salesPolicy.acc
 Situación actual: ${situation}
 Estado de la orden: ${orderState}
 
-Genera una respuesta natural, breve (máximo 2 líneas) y útil en español.`;
+Genera una respuesta natural, breve (máximo 2 líneas) y útil en español, considerando el historial de la conversación.`;
 
-      const result = await this.geminiService.generateText(instruction);
+      const previousHistory = history.slice(0, -1).map((h) => ({
+        role: h.role,
+        text: h.text,
+      }));
+      const lastUserMessage = history[history.length - 1];
+      const prompt = `${instruction}\n\nÚltimo mensaje del usuario: "${lastUserMessage?.text || ''}"`;
+
+      const result = await this.geminiService.generateChatResponse(
+        previousHistory,
+        prompt,
+      );
 
       return result || this.generateFallbackResponse(situation);
     } catch (error) {
@@ -852,6 +1068,7 @@ Genera una respuesta natural, breve (máximo 2 líneas) y útil en español.`;
       details: `REF-${companyId.slice(0, 8)}-${Date.now()}`,
       lastUpdate: new Date(),
       companyId,
+      chatHistory: [],
     };
 
     this.ordersById.set(order.orderId, order);
@@ -866,6 +1083,10 @@ Genera una respuesta natural, breve (máximo 2 líneas) y útil en español.`;
       return;
     }
 
+    this.logger.debug(
+      `Asegurando registro de usuario ${order.clientPhone} para orden ${order.orderId}`,
+    );
+
     const userId = await this.identityService.ensureCompanyUser(
       order.companyId,
       order.clientPhone,
@@ -874,6 +1095,11 @@ Genera una respuesta natural, breve (máximo 2 líneas) y útil en español.`;
 
     if (userId) {
       order.userId = userId;
+      this.logger.log(`Usuario asignado a orden: ${userId}`);
+    } else {
+      this.logger.warn(
+        `No se pudo asignar userId a orden ${order.orderId}. La orden continuará sin usuario asignado.`,
+      );
     }
   }
 

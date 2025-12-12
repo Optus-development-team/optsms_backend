@@ -191,8 +191,9 @@ echo -e "\n=== Verificación completa ==="
 ```bash
 curl -X POST \
   "https://graph.facebook.com/v24.0/2392249954565713/subscribed_apps" \
-  -H "Authorization: Bearer EAAMS3BBPkroBQH05crHkiTNh782wGWrVxMVJp5bfowROP0hWJpTqzZCuEmRI6H2wnFlWrolyL9y5Mo0LaXmFCeZB9bHTFOWm777vW2zwXyFxRXEZAxxZAetU68XZCerkA3GKxM5kps92mHfP8cU6DizTcwFnBYtc6kKMFyLUA2E7mRvBPJ1dskoxSnuCiggjuOAZDZD" \
+  -H "Authorization: Bearer EAAMS3BBPkroBQMltJMInMplq9NRCxM3kDwtVQ2lzyFEoXkAcDJ46gqKDgHWuCK6ZBKLZAwZCzabmN9JrmZBF3RSzaFbtiYpqWish9JONCaoZAQxTR1uv5OZAivo3jj9oeTYr4qcXclTatXCZAS9BAWhuZCZAdBZBWlwvd7K8LQDTvNdkH9vDsaJviFDHVC6MtsIFfOLQZDZD" \
   -d '{                             
     "data": ["messages"]
   }'
 ```
+

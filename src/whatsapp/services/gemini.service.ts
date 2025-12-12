@@ -116,4 +116,48 @@ export class GeminiService implements OnModuleInit {
       return null;
     }
   }
+
+  /**
+   * Genera respuesta de chat considerando historial.
+   */
+  async generateChatResponse(
+    history: { role: 'user' | 'model'; text: string }[],
+    prompt: string,
+  ): Promise<string | null> {
+    if (!this.geminiModel) {
+      return null;
+    }
+
+    try {
+      const contents = history.map((msg) => ({
+        role: msg.role,
+        parts: [{ text: msg.text }],
+      }));
+
+      contents.push({
+        role: 'user' as const,
+        parts: [{ text: prompt }],
+      });
+
+      const request = {
+        contents,
+        toolsDict: {},
+        liveConnectConfig: {},
+      };
+
+      let responseText = '';
+      for await (const response of this.geminiModel.generateContentAsync(
+        request,
+        false,
+      )) {
+        const text = response.content?.parts?.map((p) => p.text).join('') || '';
+        responseText += text;
+      }
+
+      return responseText.trim() || null;
+    } catch (error) {
+      this.logger.error('Error generando chat con Gemini:', error);
+      return null;
+    }
+  }
 }

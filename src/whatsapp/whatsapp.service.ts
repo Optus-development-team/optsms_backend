@@ -13,6 +13,7 @@ import {
 import { AgentRouterService } from './services/agent-router.service';
 import { IdentityService } from './services/identity.service';
 import { AdkSessionService } from './services/adk-session.service';
+import { PinataService } from './services/pinata.service';
 import type {
   RouterMessageContext,
   RouterAction,
@@ -42,6 +43,7 @@ export class WhatsappService {
     private readonly agentRouter: AgentRouterService,
     private readonly identityService: IdentityService,
     private readonly adkSessionService: AdkSessionService,
+    private readonly pinataService: PinataService,
   ) {
     this.apiVersion = this.configService.get<string>(
       'WHATSAPP_API_VERSION',
@@ -260,17 +262,23 @@ export class WhatsappService {
     if (!message.text) return;
 
     const canonicalSender = contactWaId ?? message.from;
+    this.logger.log(`📨 Procesando mensaje de ${canonicalSender} para empresa ${tenant.companyName}`);
+    
     const role = await this.identityService.resolveRole(
       tenant,
       message.from,
       contactWaId,
     );
+    this.logger.debug(`Rol resuelto: ${role}`);
+    
     // Garantiza que todo remitente quede registrado como CLIENT por defecto.
-    await this.identityService.ensureCompanyUser(
+    const userId = await this.identityService.ensureCompanyUser(
       tenant.companyId,
       canonicalSender,
       role,
     );
+    this.logger.debug(`Usuario registrado/recuperado: ${userId}`);
+    
     const adkSession = await this.adkSessionService.loadSession(
       tenant,
       canonicalSender,
@@ -300,7 +308,9 @@ export class WhatsappService {
       referredProduct,
     };
 
+    this.logger.debug(`Enrutando mensaje al agente apropiado...`);
     const routerResult = await this.agentRouter.routeTextMessage(context);
+    this.logger.log(`Intent detectado: ${routerResult.intent}, acciones: ${routerResult.actions.length}`);
 
     await this.adkSessionService.recordInteraction({
       session: adkSession,
@@ -309,7 +319,8 @@ export class WhatsappService {
     });
 
     // Manejar acciones especiales (como enviar mensaje interactivo CTA URL)
-    if (routerResult.metadata?.sendInteractiveCtaUrl) {
+    if (routerResult.metadata?.sendInteractiveCtaUrlWithQr) {
+      this.logger.log('Enviando mensaje interactivo CTA con QR...');
       const meta = routerResult.metadata;
       await this.sendInteractiveCtaUrlWithQr(
         meta.to as string,
@@ -322,11 +333,27 @@ export class WhatsappService {
         },
         { tenant },
       );
+    } else if (routerResult.metadata?.sendInteractiveCtaUrl) {
+      this.logger.log('Enviando mensaje interactivo CTA...');
+      const meta = routerResult.metadata;
+      await this.sendInteractiveCtaUrlMessage(
+        meta.to as string,
+        {
+          bodyText: meta.bodyText as string,
+          footerText: meta.footerText as string | undefined,
+          buttonDisplayText: meta.buttonDisplayText as string,
+          buttonUrl: meta.buttonUrl as string,
+        },
+        { tenant },
+      );
     }
 
+    this.logger.debug(`Despachando ${routerResult.actions.length} acciones...`);
     for (const action of routerResult.actions) {
       await this.dispatchAction(canonicalSender, action, tenant);
     }
+    
+    this.logger.log(`✅ Mensaje procesado completamente para ${canonicalSender}`);
   }
 
   /**
@@ -481,8 +508,47 @@ export class WhatsappService {
       case 'text':
         await this.sendTextMessage(recipient, action.text, { tenant });
         break;
+      case 'image': {
+        // Intentar subir a Pinata primero para obtener URL pública
+        if (this.pinataService.isEnabled()) {
+          const publicUrl = await this.pinataService.uploadImageFromBase64(
+            action.base64,
+            `qr-${Date.now()}.png`,
+          );
+          
+          if (publicUrl) {
+            // Enviar usando URL pública
+            await this.sendImageMessageFromUrl(
+              recipient,
+              publicUrl,
+              action.caption,
+              { tenant },
+            );
+            break;
+          }
+          
+          this.logger.warn('Pinata falló, usando fallback a upload directo');
+        }
+        
+        // Fallback: subir imagen a Meta directamente
+        const buffer = Buffer.from(action.base64, 'base64');
+        const { phoneNumberId } = await this.resolvePhoneNumberId({ tenant });
+        const mediaId = await this.uploadMedia(
+          buffer,
+          action.mimeType ?? 'image/png',
+          `image-${Date.now()}.png`,
+          phoneNumberId,
+        );
+        await this.sendImageMessage(
+          recipient,
+          mediaId,
+          action.caption,
+          { tenant },
+        );
+        break;
+      }
       default: {
-        const unsupportedType = action.type as string;
+        const unsupportedType = (action as { type: string }).type;
         this.logger.warn(`Acción no soportada: ${unsupportedType}`);
         break;
       }
@@ -497,6 +563,7 @@ export class WhatsappService {
     text: string,
     options?: MessageContextOptions,
   ): Promise<any> {
+    this.logger.debug(`Preparando mensaje de texto para ${to}`);
     const messageData: SendMessageDto = {
       to,
       type: 'text',
@@ -506,13 +573,36 @@ export class WhatsappService {
       },
     };
 
-    return this.sendMessage(messageData, options);
+    const result = await this.sendMessage(messageData, options);
+    this.logger.log(`✉️  Mensaje de texto enviado a ${to}`);
+    return result;
   }
 
   /**
    * Envía un mensaje con imagen
    */
   async sendImageMessage(
+    to: string,
+    imageUrl: string,
+    caption?: string,
+    options?: MessageContextOptions,
+  ): Promise<any> {
+    const messageData: SendMessageDto = {
+      to,
+      type: 'image',
+      image: {
+        link: imageUrl,
+        caption,
+      },
+    };
+
+    return this.sendMessage(messageData, options);
+  }
+
+  /**
+   * Envía un mensaje con imagen desde URL pública
+   */
+  async sendImageMessageFromUrl(
     to: string,
     imageUrl: string,
     caption?: string,
@@ -716,7 +806,8 @@ export class WhatsappService {
 
   /**
    * Envía un mensaje interactivo CTA URL con imagen QR desde base64.
-   * Primero sube la imagen a Meta y luego envía el mensaje interactivo.
+   * CRÍTICO: WhatsApp requiere URL pública para el header de imagen, NO media ID.
+   * Primero sube a Pinata Cloud para obtener URL pública permanente.
    */
   async sendInteractiveCtaUrlWithQr(
     to: string,
@@ -730,28 +821,54 @@ export class WhatsappService {
     },
     options?: MessageContextOptions,
   ): Promise<any> {
-    const { phoneNumberId } = await this.resolvePhoneNumberId(options);
+    this.logger.debug(`Preparando mensaje CTA con QR para ${to}`);
 
-    // Subir el QR como media
-    const buffer = Buffer.from(params.qrBase64, 'base64');
-    const mediaId = await this.uploadMedia(
-      buffer,
-      params.mimeType ?? 'image/png',
-      `qr-payment-${Date.now()}.png`,
-      phoneNumberId,
-    );
+    // Intentar subir a Pinata para obtener URL pública (requerido por WhatsApp)
+    let qrImageUrl: string | null = null;
+    
+    if (this.pinataService.isEnabled()) {
+      try {
+        this.logger.debug('Subiendo QR a Pinata Cloud...');
+        qrImageUrl = await this.pinataService.uploadImageFromBase64(
+          params.qrBase64,
+          `qr-payment-${Date.now()}.png`,
+        );
+        this.logger.log(`QR subido exitosamente a Pinata: ${qrImageUrl}`);
+      } catch (error) {
+        this.logger.error('Error subiendo QR a Pinata:', error);
+      }
+    } else {
+      this.logger.warn('Pinata no está configurado, no se puede enviar QR en header');
+    }
 
-    // Enviar mensaje interactivo con el media ID
+    // Si no hay URL del QR, enviar mensaje sin header de imagen
+    if (!qrImageUrl) {
+      this.logger.warn(
+        'No se pudo obtener URL pública del QR. Enviando mensaje CTA sin imagen en header.',
+      );
+      return this.sendInteractiveCtaUrlMessage(
+        to,
+        {
+          bodyText: params.bodyText,
+          footerText: params.footerText,
+          buttonDisplayText: params.buttonDisplayText,
+          buttonUrl: params.buttonUrl,
+        },
+        options,
+      );
+    }
+
+    // Enviar mensaje interactivo con URL pública del QR en header
     return this.sendInteractiveCtaUrlMessage(
       to,
       {
-        headerImageId: mediaId,
+        headerImageUrl: qrImageUrl,
         bodyText: params.bodyText,
         footerText: params.footerText,
         buttonDisplayText: params.buttonDisplayText,
         buttonUrl: params.buttonUrl,
       },
-      { ...options, phoneNumberId },
+      options,
     );
   }
 

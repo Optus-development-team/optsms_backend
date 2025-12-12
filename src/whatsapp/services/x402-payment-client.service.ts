@@ -97,7 +97,7 @@ export class X402PaymentClientService {
    * Esto devuelve 402 con las opciones de pago disponibles (fiat QR y/o crypto).
    */
   async initiatePayment(params: {
-    orderId: string;
+    orderId: string; // Este debe ser el ID de la base de datos (supabaseOrderId)
     amountUsd: number;
     description?: string;
     resource?: string;
@@ -135,6 +135,7 @@ export class X402PaymentClientService {
       const response = await firstValueFrom(
         this.httpService.get<X402NegotiationResponse>(url, {
           validateStatus: (status) => status === 402 || status === 200,
+          timeout: 30000, // 30 segundos para generación de QR
         }),
       );
 
@@ -146,7 +147,7 @@ export class X402PaymentClientService {
         const qrImageBase64 = fiatOption?.base64QrSimple;
 
         // Construir URL de pago con MAIN_PAGE_URL
-        const paymentUrl = `${this.mainPageUrl}/pay/${params.orderId}`;
+        const paymentUrl = `${this.mainPageUrl}/pago/${params.orderId}`;
 
         this.logger.log(
           `Pago x402 iniciado para orden ${params.orderId}. Job ID: ${data.jobId}`,
@@ -215,6 +216,7 @@ export class X402PaymentClientService {
               'X-PAYMENT': xPaymentHeader,
             },
             validateStatus: (status) => status === 200 || status === 402,
+            timeout: 45000, // 45 segundos para verificación bancaria
           },
         ),
       );

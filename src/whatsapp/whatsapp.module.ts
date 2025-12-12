@@ -23,6 +23,7 @@ import { PaymentWarmupService } from './services/payment-warmup.service';
 import { GeminiService } from './services/gemini.service';
 import { MetaCatalogService } from './services/meta-catalog.service';
 import { X402PaymentClientService } from './services/x402-payment-client.service';
+import { PinataService } from './services/pinata.service';
 import { CatalogTestController } from './catalog-test.controller';
 import { PaymentProxyController } from './payment-proxy.controller';
 
@@ -55,6 +56,7 @@ import { PaymentProxyController } from './payment-proxy.controller';
     GeminiService,
     MetaCatalogService,
     X402PaymentClientService,
+    PinataService,
   ],
   exports: [WhatsappService],
 })
