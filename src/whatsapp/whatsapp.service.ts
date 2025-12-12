@@ -17,6 +17,7 @@ import type {
   RouterMessageContext,
   RouterAction,
   TenantContext,
+  ReferredProduct,
 } from './whatsapp.types';
 
 interface MessageContextOptions {
@@ -31,6 +32,9 @@ export class WhatsappService {
   private readonly apiVersion: string;
   private readonly apiToken: string;
   private readonly defaultPhoneNumberId: string;
+  // Cache in-memory para evitar reprocesar mensajes cuando Meta reintenta el webhook.
+  private readonly processedMessageCache = new Map<string, number>();
+  private readonly processedMessageTtlMs = 10 * 60 * 1000; // 10 minutos
 
   constructor(
     private readonly configService: ConfigService,
@@ -47,7 +51,7 @@ export class WhatsappService {
       'WHATSAPP_PHONE_NUMBER_ID',
       '',
     );
-    this.apiToken = this.configService.get<string>('WHATSAPP_API_TOKEN', '');
+    this.apiToken = this.configService.get<string>('META_API_TOKEN', '');
   }
 
   /**
@@ -134,6 +138,13 @@ export class WhatsappService {
     tenant: TenantContext,
     contactWaId?: string,
   ): Promise<void> {
+    if (this.isDuplicateMessage(message.id)) {
+      this.logger.warn(
+        `Mensaje duplicado detectado (id=${message.id}). Se omite para evitar reprocesamiento.`,
+      );
+      return;
+    }
+
     this.logger.log(`Mensaje recibido de: ${message.from}`);
     this.logger.log(`Tipo de mensaje: ${message.type}`);
 
@@ -266,6 +277,18 @@ export class WhatsappService {
       role,
     );
 
+    // Extraer producto referenciado si viene del catálogo de WhatsApp
+    let referredProduct: ReferredProduct | undefined;
+    if (message.context?.referred_product) {
+      referredProduct = {
+        catalogId: message.context.referred_product.catalog_id,
+        productRetailerId: message.context.referred_product.product_retailer_id,
+      };
+      this.logger.log(
+        `Mensaje con producto referenciado: ${referredProduct.productRetailerId} del catálogo ${referredProduct.catalogId}`,
+      );
+    }
+
     const context: RouterMessageContext = {
       senderId: canonicalSender,
       whatsappMessageId: message.id,
@@ -274,6 +297,7 @@ export class WhatsappService {
       tenant,
       role,
       adkSession,
+      referredProduct,
     };
 
     const routerResult = await this.agentRouter.routeTextMessage(context);
@@ -283,6 +307,23 @@ export class WhatsappService {
       intent: routerResult.intent,
       sanitized: routerResult.sanitized,
     });
+
+    // Manejar acciones especiales (como enviar mensaje interactivo CTA URL)
+    if (routerResult.metadata?.sendInteractiveCtaUrl) {
+      const meta = routerResult.metadata;
+      await this.sendInteractiveCtaUrlWithQr(
+        meta.to as string,
+        {
+          qrBase64: meta.qrBase64 as string,
+          bodyText: meta.bodyText as string,
+          footerText: meta.footerText as string | undefined,
+          buttonDisplayText: meta.buttonDisplayText as string,
+          buttonUrl: meta.buttonUrl as string,
+        },
+        { tenant },
+      );
+    }
+
     for (const action of routerResult.actions) {
       await this.dispatchAction(canonicalSender, action, tenant);
     }
@@ -393,6 +434,30 @@ export class WhatsappService {
     this.logger.log(
       `Estado del mensaje ${status.id}: ${status.status} - Destinatario: ${status.recipient_id}`,
     );
+  }
+
+  private isDuplicateMessage(messageId: string | undefined): boolean {
+    if (!messageId) {
+      return false;
+    }
+
+    const now = Date.now();
+    this.pruneProcessedMessages(now);
+
+    if (this.processedMessageCache.has(messageId)) {
+      return true;
+    }
+
+    this.processedMessageCache.set(messageId, now);
+    return false;
+  }
+
+  private pruneProcessedMessages(reference: number): void {
+    for (const [id, timestamp] of this.processedMessageCache.entries()) {
+      if (reference - timestamp > this.processedMessageTtlMs) {
+        this.processedMessageCache.delete(id);
+      }
+    }
   }
 
   private resolveContactWaId(
@@ -563,6 +628,131 @@ export class WhatsappService {
     };
 
     return this.sendMessage(messageData, options);
+  }
+
+  /**
+   * Envía un mensaje interactivo CTA URL (Call-to-Action con botón de enlace).
+   * Ideal para enviar QR de pago con botón para abrir la página de pago.
+   *
+   * @see https://developers.facebook.com/docs/whatsapp/cloud-api/messages/interactive-cta-url-messages
+   */
+  async sendInteractiveCtaUrlMessage(
+    to: string,
+    params: {
+      headerImageUrl?: string;
+      headerImageId?: string;
+      bodyText: string;
+      footerText?: string;
+      buttonDisplayText: string;
+      buttonUrl: string;
+    },
+    options?: MessageContextOptions,
+  ): Promise<any> {
+    const { phoneNumberId } = await this.resolvePhoneNumberId(options);
+
+    // Construir el header (imagen opcional)
+    let header: Record<string, unknown> | undefined;
+    if (params.headerImageUrl) {
+      header = {
+        type: 'image',
+        image: {
+          link: params.headerImageUrl,
+        },
+      };
+    } else if (params.headerImageId) {
+      header = {
+        type: 'image',
+        image: {
+          id: params.headerImageId,
+        },
+      };
+    }
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to,
+      type: 'interactive',
+      interactive: {
+        type: 'cta_url',
+        ...(header && { header }),
+        body: {
+          text: params.bodyText,
+        },
+        ...(params.footerText && {
+          footer: {
+            text: params.footerText,
+          },
+        }),
+        action: {
+          name: 'cta_url',
+          parameters: {
+            display_text: params.buttonDisplayText,
+            url: params.buttonUrl,
+          },
+        },
+      },
+    };
+
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post(this.getMessagesEndpoint(phoneNumberId), payload, {
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.apiToken}`,
+          },
+        }),
+      );
+
+      this.logger.log(`Mensaje interactivo CTA URL enviado a ${to}`);
+      return response.data;
+    } catch (error) {
+      const safeError = error as Error & { response?: { data?: unknown } };
+      const details = safeError.response?.data ?? safeError.message;
+      this.logger.error('Error enviando mensaje interactivo CTA URL:', details);
+      throw safeError;
+    }
+  }
+
+  /**
+   * Envía un mensaje interactivo CTA URL con imagen QR desde base64.
+   * Primero sube la imagen a Meta y luego envía el mensaje interactivo.
+   */
+  async sendInteractiveCtaUrlWithQr(
+    to: string,
+    params: {
+      qrBase64: string;
+      mimeType?: string;
+      bodyText: string;
+      footerText?: string;
+      buttonDisplayText: string;
+      buttonUrl: string;
+    },
+    options?: MessageContextOptions,
+  ): Promise<any> {
+    const { phoneNumberId } = await this.resolvePhoneNumberId(options);
+
+    // Subir el QR como media
+    const buffer = Buffer.from(params.qrBase64, 'base64');
+    const mediaId = await this.uploadMedia(
+      buffer,
+      params.mimeType ?? 'image/png',
+      `qr-payment-${Date.now()}.png`,
+      phoneNumberId,
+    );
+
+    // Enviar mensaje interactivo con el media ID
+    return this.sendInteractiveCtaUrlMessage(
+      to,
+      {
+        headerImageId: mediaId,
+        bodyText: params.bodyText,
+        footerText: params.footerText,
+        buttonDisplayText: params.buttonDisplayText,
+        buttonUrl: params.buttonUrl,
+      },
+      { ...options, phoneNumberId },
+    );
   }
 
   /**

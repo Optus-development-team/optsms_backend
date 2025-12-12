@@ -6,13 +6,18 @@ import { Gemini } from '@google/adk';
 export class GeminiService implements OnModuleInit {
   private readonly logger = new Logger(GeminiService.name);
   private geminiModel: Gemini | null = null;
+  private readonly configuredModelName: string;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(private readonly config: ConfigService) {
+    const rawModel = this.config.get<string>('GOOGLE_GENAI_MODEL') ?? '';
+    this.configuredModelName = rawModel.trim() || 'gemini-2.5-flash-lite';
+  }
 
   onModuleInit() {
     const apiKey = this.config.get<string>('GOOGLE_GENAI_API_KEY');
     const useVertexAi =
       this.config.get<string>('GOOGLE_GENAI_USE_VERTEXAI') === 'true';
+    const modelName = this.configuredModelName;
 
     if (!apiKey && !useVertexAi) {
       this.logger.warn(
@@ -35,22 +40,24 @@ export class GeminiService implements OnModuleInit {
         }
 
         this.geminiModel = new Gemini({
-          model: 'gemini-2.5-flash',
+          model: modelName,
           vertexai: true,
           project,
           location,
         });
 
         this.logger.log(
-          `Gemini inicializado con Vertex AI (proyecto: ${project}, ubicación: ${location})`,
+          `Gemini inicializado con Vertex AI (modelo: ${modelName}, proyecto: ${project}, ubicación: ${location})`,
         );
       } else {
         this.geminiModel = new Gemini({
-          model: 'gemini-2.5-flash',
+          model: modelName,
           apiKey,
         });
 
-        this.logger.log('Gemini inicializado con API Key');
+        this.logger.log(
+          `Gemini inicializado con API Key (modelo: ${modelName})`,
+        );
       }
     } catch (error) {
       this.logger.error('Error al inicializar Gemini:', error);

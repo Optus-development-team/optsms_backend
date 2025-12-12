@@ -185,3 +185,14 @@ echo -e "\n=== Verificación completa ==="
 - [Business Management API](https://developers.facebook.com/docs/whatsapp/business-management-api/manage-phone-numbers)
 - [WhatsApp Business Account](https://developers.facebook.com/docs/graph-api/reference/whats-app-business-account/)
 - [Embedded Signup](https://developers.facebook.com/docs/whatsapp/embedded-signup)
+
+## Script de Suscripcion
+
+```bash
+curl -X POST \
+  "https://graph.facebook.com/v24.0/2392249954565713/subscribed_apps" \
+  -H "Authorization: Bearer EAAMS3BBPkroBQH05crHkiTNh782wGWrVxMVJp5bfowROP0hWJpTqzZCuEmRI6H2wnFlWrolyL9y5Mo0LaXmFCeZB9bHTFOWm777vW2zwXyFxRXEZAxxZAetU68XZCerkA3GKxM5kps92mHfP8cU6DizTcwFnBYtc6kKMFyLUA2E7mRvBPJ1dskoxSnuCiggjuOAZDZD" \
+  -d '{                             
+    "data": ["messages"]
+  }'
+```

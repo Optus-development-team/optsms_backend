@@ -29,7 +29,7 @@ export class PaymentClientService {
     private readonly configService: ConfigService,
   ) {
     this.baseUrl = this.configService.get<string>(
-      'PAYMENT_BASE_URL',
+      'PAYMENT_BACKEND_URL',
       'http://payment-backend-service',
     );
     this.apiKey = this.configService.get<string>('PAYMENT_API_KEY', '');

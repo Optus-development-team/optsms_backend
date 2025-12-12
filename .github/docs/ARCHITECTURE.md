@@ -23,7 +23,7 @@ graph TB
 
     subgraph "Google Gemini AI Layer"
         GEMINI[GeminiService]
-        GEMINI_API[Google Gemini API<br/>gemini-2.5-flash]
+        GEMINI_API[Google Gemini API<br/>gemini-2.5-flash-lite]
     end
 
     subgraph "Orquestador Inteligente"

@@ -36,11 +36,19 @@ $ npm install
 Crear un archivo `.env` en la raíz con las variables:
 
 ```
-WHATSAPP_API_VERSION=v21.0
+WHATSAPP_API_VERSION=v24.0
 WHATSAPP_PHONE_NUMBER_ID=<id_del_numero>
-WHATSAPP_API_TOKEN=<token_de_acceso>
+META_API_TOKEN=<token_de_acceso_meta>
 WHATSAPP_VERIFY_TOKEN=<token_para_verificacion>
 ```
+
+### Nuevas funcionalidades: Catálogo de Meta
+
+Para habilitar la sincronización con el catálogo de productos de Meta:
+
+1. Configura el `business_catalog_id` en la tabla `companies` de Supabase
+2. El token `META_API_TOKEN` debe tener permisos de catálogo
+3. Ver documentación completa en `.github/docs/META_CATALOG_INTEGRATION.md`
 
 Opcionalmente puedes añadir `APP_SECRET` para validar firmas HMAC cuando se implemente.
 

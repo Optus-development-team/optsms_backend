@@ -19,13 +19,13 @@ Este proyecto usa **Google Application Development Kit (ADK)** para integrar **G
 ```typescript
 // API Key (desarrollo)
 new Gemini({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   apiKey: process.env.GOOGLE_GENAI_API_KEY
 })
 
 // Vertex AI (producción)
 new Gemini({
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   vertexai: true,
   project: process.env.GOOGLE_CLOUD_PROJECT,
   location: process.env.GOOGLE_CLOUD_LOCATION
@@ -345,7 +345,7 @@ import { Runner, LlmAgent } from '@google/adk';
 
 const appointmentAgent = new LlmAgent({
   name: 'appointment_agent',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   instruction: '...',
   tools: [checkAvailabilityTool]
 });
@@ -368,7 +368,7 @@ for await (const event of runner.runAsync({
 ```typescript
 const rootAgent = new LlmAgent({
   name: 'coordinator',
-  model: 'gemini-2.5-flash',
+  model: 'gemini-2.5-flash-lite',
   description: 'Coordinador multi-tenant',
   sub_agents: [appointmentAgent, salesAgent, reportingAgent]
   // → transfer_to_agent automático

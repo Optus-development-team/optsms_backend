@@ -48,6 +48,15 @@ export interface AdkSessionSnapshot {
   context: Record<string, unknown>;
 }
 
+/**
+ * Información del producto referenciado desde WhatsApp (cuando el usuario
+ * envía un mensaje preguntando por un producto específico del catálogo).
+ */
+export interface ReferredProduct {
+  catalogId: string;
+  productRetailerId: string;
+}
+
 export interface RouterMessageContext {
   senderId: string;
   whatsappMessageId: string;
@@ -56,6 +65,8 @@ export interface RouterMessageContext {
   tenant: TenantContext;
   role: UserRole;
   adkSession: AdkSessionSnapshot;
+  /** Producto referenciado si el mensaje viene de un producto del catálogo */
+  referredProduct?: ReferredProduct;
 }
 
 export type RouterAction = {
@@ -74,6 +85,33 @@ export interface RouterResult extends AgentResponse {
   sanitized: SanitizedTextResult;
 }
 
+/**
+ * Datos de negociación x402 almacenados en la orden
+ */
+export interface X402NegotiationData {
+  x402Version: number;
+  resource: string;
+  accepts: Array<{
+    type: 'fiat' | 'crypto';
+    currency?: string;
+    symbol?: string;
+    amountRequired?: number;
+    base64QrSimple?: string;
+  }>;
+  jobId: string;
+}
+
+/**
+ * Datos de settlement x402 almacenados en la orden
+ */
+export interface X402SettlementData {
+  success: boolean;
+  type: 'fiat' | 'crypto';
+  transaction?: string | null;
+  currency?: string;
+  errorReason?: string | null;
+}
+
 export interface PaymentOrder {
   orderId: string;
   clientPhone: string;
@@ -85,4 +123,32 @@ export interface PaymentOrder {
   companyId: string;
   supabaseOrderId?: string;
   userId?: string;
+  /** Job ID de x402 para tracking del pago */
+  x402JobId?: string;
+  /** URL de pago generada (MAIN_PAGE_URL + orderId) */
+  paymentUrl?: string;
+  /** Respuesta de negociación x402 (opciones de pago) */
+  x402Negotiation?: X402NegotiationData;
+  /** Respuesta de settlement x402 (resultado del pago) */
+  x402Settlement?: X402SettlementData;
+  /** product_retailer_id referenciado desde WhatsApp */
+  referredProductId?: string;
+  /** catalog_id referenciado desde WhatsApp */
+  referredCatalogId?: string;
+}
+
+export enum SalesToolType {
+  SYNC_INVENTORY_TO_META = 'sync_inventory_to_meta',
+  SYNC_INVENTORY_FROM_META = 'sync_inventory_from_meta',
+  SEARCH_PRODUCTS = 'search_products',
+  GET_PRODUCT_INFO = 'get_product_info',
+  UPDATE_PRODUCT_AVAILABILITY = 'update_product_availability',
+  LIST_ALL_PRODUCTS = 'list_all_products',
+}
+
+export interface SalesToolResult {
+  success: boolean;
+  data?: any;
+  error?: string;
+  message?: string;
 }

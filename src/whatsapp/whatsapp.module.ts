@@ -21,6 +21,10 @@ import { OnboardingService } from './services/onboarding.service';
 import { OrdersSyncService } from './services/orders-sync.service';
 import { PaymentWarmupService } from './services/payment-warmup.service';
 import { GeminiService } from './services/gemini.service';
+import { MetaCatalogService } from './services/meta-catalog.service';
+import { X402PaymentClientService } from './services/x402-payment-client.service';
+import { CatalogTestController } from './catalog-test.controller';
+import { PaymentProxyController } from './payment-proxy.controller';
 
 @Module({
   imports: [HttpModule, ConfigModule],
@@ -28,6 +32,8 @@ import { GeminiService } from './services/gemini.service';
     WhatsappController,
     PaymentWebhookController,
     GoogleAuthController,
+    CatalogTestController,
+    PaymentProxyController,
   ],
   providers: [
     WhatsappService,
@@ -47,6 +53,8 @@ import { GeminiService } from './services/gemini.service';
     OrdersSyncService,
     PaymentWarmupService,
     GeminiService,
+    MetaCatalogService,
+    X402PaymentClientService,
   ],
   exports: [WhatsappService],
 })
